@@ -568,6 +568,7 @@ for x0_, x1_ in FLIGHTS:
 for wx in []:
     PILLARS[:] = [p for p in PILLARS if abs(p["x"] - wx) > 60]
     PILLARS.append(dict(kind="wall", x=wx, z0=-90, z1=55, w=26, h=random.uniform(200, 260), alive=True))
+PILLARS = []   # plus de piliers
 CRATERS = []; MARKS = []; DEBRIS = []; MCRATERS = []
 LAVA = []
 for k in range(70):
