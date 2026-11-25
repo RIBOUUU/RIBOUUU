@@ -1,5 +1,6 @@
 """Combat de bonhommes sur 3 jours (projections, décor détruit, rayon final) : chorégraphie générée sur les kicks, coups réalistes, caméra 3D/2D, jour/nuit."""
-import sys, subprocess, math, random
+import sys, subprocess, math, random, os
+SLOW = float(os.environ.get('SLOW', '1'))   # 0.5 = tout au ralenti (2x plus lent)
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
@@ -589,7 +590,7 @@ def break_pillars(x, rad, push=0.0):
             sparks.extend([[p["x"], random.uniform(0, p["h"]), (p["z0"] + p["z1"])/2, push*0.5 + random.uniform(-4, 4), random.uniform(0, 6), random.uniform(-2, 2), 1.0, (150, 130, 110)] for _ in range(25)])
 
 ff = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
-                       "-r", str(FPS), "-i", "-", "-ss", str(START), "-t", str(DUR), "-i", AUDIO,
+                       "-r", str(FPS), "-i", "-", "-ss", str(START), "-t", str(DUR), "-i", AUDIO, "-af", f"atempo={SLOW}",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-c:a", "aac", "-shortest", OUT],
                       stdin=subprocess.PIPE)
 bodies = [Body(P["tuck"]), Body(P["stance"])]
@@ -663,8 +664,8 @@ def rig(i, st, ta, dta):
     fs["last"] = [w[9][0], w[11][0]]
     return w
 
-for f in range(int(DUR*FPS)):
-    t = f/FPS
+for f in range(int(DUR*FPS/SLOW)):
+    t = f*SLOW/FPS
     ta = anim_time(t); dta = ta - ta_prev; ta_prev = ta; spd = float(np.clip(dta*FPS, 0, 3))
     day_i = int(max(0, t - SUNRISE0)//DAY)
     st = [T[0].state(ta), T[1].state(ta)]
