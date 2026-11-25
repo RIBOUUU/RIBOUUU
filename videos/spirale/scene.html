@@ -15,16 +15,59 @@ const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
 const TL = await (await fetch('timeline.json')).json();
 const HITS = TL.hits, N = HITS.length;
 
-// ---------- geometrie de la spirale ----------
-const R = 4.0;          // rayon de la trajectoire de la bille
-const DA = 0.36;        // pas angulaire entre deux paves (rad)
-const DY = 0.42;        // descente par pave
-const A0 = 0.0;
+// =====================================================================
+// PRINCIPE : la bille avance TOUJOURS a la meme vitesse le long de la
+// spirale (V). Ce sont les blocs qui se rapprochent quand la musique
+// accelere : l'ecart entre deux blocs = V x duree de la note.
+// Tous les 10 notes : nouveau type de bloc + nouvelle facon de tomber.
+// =====================================================================
+const R = 5.0;          // rayon de la trajectoire
+const V = 5.5;          // vitesse constante de la bille le long de la spirale (unites/s)
 const BR = 0.28;        // rayon de la bille
-const EXTRA = 10;       // paves supplementaires (escalier qui continue)
-const ang = i => A0 - i * DA;
-const topY = i => -i * DY;
+const SEG = 10;         // nombre de notes par segment de style
+const APEX_MAX = 2.2;   // hauteur max d'un saut (au-dela, le bloc suivant est place plus bas)
 const onSpiral = (a, y, r = R) => new THREE.Vector3(r * Math.cos(a), y, r * Math.sin(a));
+
+// --- types de blocs (changent tous les 10 notes) ---
+const BLOCK_STYLES = [
+  { name: 'onyx',    shape: 'box', L: 2.5, H: 0.85, maxW: 0.9,  off: 0.35, color: 0x18181c, rough: 0.55, metal: 0.2, neon: '#ffd21a' },
+  { name: 'verre',   shape: 'box', L: 2.3, H: 0.7,  maxW: 0.85, off: 0.3,  color: 0x9fd6ff, rough: 0.1,  metal: 0.0, neon: '#8fd0ff', glass: true },
+  { name: 'bois',    shape: 'box', L: 2.9, H: 0.32, maxW: 0.8,  off: 0.4,  color: 0x7a4a26, rough: 0.7,  metal: 0.0, neon: '#ff8a2a' },
+  { name: 'cube',    shape: 'box', L: 1.05,H: 1.05, maxW: 1.05, off: 0.0,  color: 0x2a0c16, rough: 0.4,  metal: 0.3, neon: '#ff3d8b' },
+  { name: 'tambour', shape: 'hex', L: 1.2, H: 0.7,  maxW: 1.2,  off: 0.0,  color: 0x22123a, rough: 0.45, metal: 0.3, neon: '#b56cff' },
+  { name: 'or',      shape: 'box', L: 2.5, H: 0.55, maxW: 0.9,  off: 0.35, color: 0xc9a227, rough: 0.28, metal: 1.0, neon: '#3dff8a' },
+];
+// --- facons de tomber (changent tous les 10 notes) ---
+//  g : gravite, slope : descente par seconde de trajet, zig : ecart radial alterne, squash : ecrasement
+const FALL_STYLES = [
+  { name: 'rebond',      g: 39, slope: 1.3 },
+  { name: 'rase-mottes', g: 39, slope: 3.6 },
+  { name: 'grand saut',  g: 75, slope: 1.3 },
+  { name: 'zigzag',      g: 39, slope: 1.3, zig: 0.6 },
+  { name: 'ecrase',      g: 39, slope: 1.3, squash: true },
+];
+const segOf = i => Math.floor(i / SEG);
+const blockStyle = i => BLOCK_STYLES[segOf(i) % BLOCK_STYLES.length];
+const fallStyle = i => FALL_STYLES[segOf(i) % FALL_STYLES.length];
+
+// --- placement des impacts + parametres de chaque saut ---
+const land = [];   // {a, y, r} point de contact (centre de la bille)
+const hops = [];   // {T, g, vy}
+land.push({ a: 0, y: 0, r: R });
+for (let i = 0; i < N; i++) {
+  // derniere note : la bille saute directement sur le rail de sortie (elle n'attend pas la fin du son)
+  const T = i === N - 1 ? 0.45 : HITS[i].dur, fs = fallStyle(i);
+  let dy = -fs.slope * T;
+  let vy = (dy + fs.g * T * T / 2) / T;
+  const vmax = Math.sqrt(2 * fs.g * APEX_MAX);
+  if (vy > vmax) { vy = vmax; dy = vy * T - fs.g * T * T / 2; }   // note longue : chute plus profonde
+  const nextZig = i + 1 < N ? fallStyle(i + 1).zig || 0 : 0;
+  const r = R + (nextZig ? ((i + 1) % 2 ? nextZig : -nextZig) : 0);
+  hops.push({ T, g: fs.g, vy });
+  const p = land[i];
+  land.push({ a: p.a - V * T / R, y: p.y + dy, r });
+}
+// land[N] = arrivee sur le rail de sortie
 
 // ---------- renderer ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -34,10 +77,9 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xb9b4d4, 12, 42);
+scene.fog = new THREE.Fog(0xb9b4d4, 13, 46);
 const camera = new THREE.PerspectiveCamera(52, W / H, 0.1, 200);
 
-// ciel degrade crepuscule : chaud d'un cote, froid de l'autre
 const sky = new THREE.Mesh(new THREE.SphereGeometry(100, 48, 24), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false,
   vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
@@ -51,102 +93,113 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(100, 48, 24), new THREE.Shad
 }));
 scene.add(sky);
 
-// lumieres
 scene.add(new THREE.HemisphereLight(0xd6d6ff, 0x5a5070, 0.9));
 const sun = new THREE.DirectionalLight(0xffc4a2, 2.2);
 sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 9, bottom: -9, near: 0.5, far: 40 });
+Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 10, bottom: -10, near: 0.5, far: 45 });
 sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
 scene.add(sun, sun.target);
 const SUN_OFF = new THREE.Vector3(10, 14, -6);
 
-// colonne centrale claire (recoit les ombres de l'escalier)
-const column = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 400, 64),
+const yMin = Math.min(...land.map(l => l.y));
+const column = new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.3, -yMin + 80, 64),
   new THREE.MeshStandardMaterial({ color: 0xe9e6f2, roughness: 0.9 }));
-column.position.y = -60; column.receiveShadow = true; scene.add(column);
+column.position.y = (40 + yMin - 40) / 2; column.receiveShadow = true; scene.add(column);
 
-// ---------- textures 7 segments ----------
-const SEG = { 0:'abcdef',1:'bc',2:'abged',3:'abgcd',4:'fgbc',5:'afgcd',6:'afgedc',7:'abc',8:'abcdefg',9:'abcfgd' };
+// ---------- textures 7 segments (par couleur de neon) ----------
+const SEGS = { 0:'abcdef',1:'bc',2:'abged',3:'abgcd',4:'fgbc',5:'afgcd',6:'afgedc',7:'abc',8:'abcdefg',9:'abcfgd' };
 function segPaths(ctx, s, x0, y0, w, h, t) {
   const m = { a:[x0+t,y0,w-2*t,t], d:[x0+t,y0+h-t,w-2*t,t], g:[x0+t,y0+h/2-t/2,w-2*t,t],
     f:[x0,y0+t,t,h/2-t*1.5], b:[x0+w-t,y0+t,t,h/2-t*1.5], e:[x0,y0+h/2+t/2,t,h/2-t*1.5], c:[x0+w-t,y0+h/2+t/2,t,h/2-t*1.5] };
   for (const k of s) { const [x,y,ww,hh] = m[k]; ctx.beginPath(); ctx.roundRect(x,y,ww,hh,t*0.45); ctx.fill(); }
 }
-function digitTex(d, lit) {
+const texCache = {};
+function digitTex(d, neon) {   // neon = null -> face eteinte
+  const key = d + (neon || 'off');
+  if (texCache[key]) return texCache[key];
   const c = document.createElement('canvas'); c.width = c.height = 256;
   const g = c.getContext('2d');
-  if (lit) {
-    g.strokeStyle = '#ffd21a'; g.lineWidth = 16; g.strokeRect(8, 8, 240, 240);
-    g.fillStyle = '#ffd21a'; segPaths(g, SEG[d], 70, 42, 116, 172, 22);
+  if (neon) {
+    g.strokeStyle = neon; g.lineWidth = 16; g.strokeRect(8, 8, 240, 240);
+    g.fillStyle = neon; segPaths(g, SEGS[d], 70, 42, 116, 172, 22);
   } else {
     g.fillStyle = '#151518'; g.fillRect(0, 0, 256, 256);
-    g.fillStyle = '#26262c'; segPaths(g, SEG[8], 70, 42, 116, 172, 22);   // segments eteints
-    g.fillStyle = '#34343c'; segPaths(g, SEG[d], 70, 42, 116, 172, 22);
+    g.fillStyle = '#26262c'; segPaths(g, SEGS[8], 70, 42, 116, 172, 22);
+    g.fillStyle = '#34343c'; segPaths(g, SEGS[d], 70, 42, 116, 172, 22);
   }
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return (texCache[key] = t);
 }
-const texOff = [], texOn = [];
-for (let d = 0; d < 10; d++) { texOff.push(digitTex(d, false)); texOn.push(digitTex(d, true)); }
 
-// ---------- paves ----------
-const BL = 2.5, BH = 0.85, BW = 0.9;
-const boxGeo = new THREE.BoxGeometry(BL, BH, BW);
-const boxMat = new THREE.MeshStandardMaterial({ color: 0x18181c, roughness: 0.55, metalness: 0.2 });
+// ---------- blocs ----------
 const screwGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.03, 16);
 const screwMat = new THREE.MeshStandardMaterial({ color: 0xb8b8c0, metalness: 1, roughness: 0.3 });
 const wireMat = new THREE.MeshStandardMaterial({ color: 0x55555e, metalness: 0.8, roughness: 0.4 });
-const faceGeo = new THREE.PlaneGeometry(BW * 0.96, BH * 0.96);
+const styleMats = BLOCK_STYLES.map(s => new THREE.MeshStandardMaterial({
+  color: s.color, roughness: s.rough, metalness: s.metal,
+  transparent: !!s.glass, opacity: s.glass ? 0.55 : 1, emissive: s.glass ? 0x203850 : 0x000000 }));
 const blocks = [];
-for (let i = 0; i < N + EXTRA; i++) {
+for (let i = 0; i < N; i++) {
+  const st = blockStyle(i), mat = styleMats[BLOCK_STYLES.indexOf(st)];
+  const p = land[i];
+  // largeur : limitee par l'ecart avec les voisins (les blocs se serrent quand ca accelere)
+  const gap = Math.min(i > 0 ? land[i - 1].a - p.a : 9, p.a - land[i + 1].a);
+  const rIn = p.r + st.off - st.L / 2;
+  const w = Math.min(st.maxW, Math.abs(gap) * Math.max(rIn, 1.5) * 0.78);
   const grp = new THREE.Group();
-  const a = ang(i);
-  grp.position.copy(onSpiral(a, topY(i) - BH / 2, R + 0.35));
-  grp.rotation.y = -a;
-  const box = new THREE.Mesh(boxGeo, boxMat); box.castShadow = box.receiveShadow = true; grp.add(box);
-  for (const sx of [-0.85, 0.75]) { const s = new THREE.Mesh(screwGeo, screwMat); s.position.set(sx, BH/2 + 0.01, 0); grp.add(s); }
+  grp.position.copy(onSpiral(p.a, p.y - BR - st.H / 2, p.r + st.off));
+  grp.rotation.y = -p.a;
+  let body, faceW, faceX;
+  if (st.shape === 'hex') {
+    const rad = Math.min(st.L / 2, w / 2 / Math.cos(Math.PI / 6));
+    body = new THREE.Mesh(new THREE.CylinderGeometry(rad, rad, st.H, 6), mat);
+    body.rotation.y = Math.PI / 6;               // une face plate vers l'exterieur (+x)
+    faceW = rad * 0.92; faceX = rad * Math.cos(Math.PI / 6);
+  } else {
+    body = new THREE.Mesh(new THREE.BoxGeometry(st.L, st.H, w), mat);
+    faceW = w * 0.96; faceX = st.L / 2;
+  }
+  body.castShadow = true; body.receiveShadow = !st.glass; grp.add(body);
+  if (st.shape === 'box' && st.L > 2) for (const sx of [-st.L * 0.34, st.L * 0.3]) {
+    const s = new THREE.Mesh(screwGeo, screwMat); s.position.set(sx, st.H / 2 + 0.01, 0); grp.add(s);
+  }
+  const faceH = Math.min(st.H * 0.96, faceW * 1.1), faceGeo = new THREE.PlaneGeometry(faceW, faceH);
   const d = (i + 1) % 10;
-  const off = new THREE.Mesh(faceGeo, new THREE.MeshBasicMaterial({ map: texOff[d] }));
-  off.position.x = BL / 2 + 0.002; off.rotation.y = Math.PI / 2; grp.add(off);
-  const onMat = new THREE.MeshBasicMaterial({ map: texOn[d], transparent: true, opacity: 0, toneMapped: false,
+  const off = new THREE.Mesh(faceGeo, new THREE.MeshBasicMaterial({ map: digitTex(d, null) }));
+  off.position.x = faceX + 0.003; off.rotation.y = Math.PI / 2; grp.add(off);
+  const onMat = new THREE.MeshBasicMaterial({ map: digitTex(d, st.neon), transparent: true, opacity: 0, toneMapped: false,
     blending: THREE.AdditiveBlending, depthWrite: false });
-  const on = new THREE.Mesh(faceGeo, onMat); on.position.x = BL / 2 + 0.004; on.rotation.y = Math.PI / 2; grp.add(on);
-  // fil de suspension depuis l'extremite exterieure
+  const on = new THREE.Mesh(faceGeo, onMat); on.position.x = faceX + 0.006; on.rotation.y = Math.PI / 2; grp.add(on);
+  // liseré neon sur le dessus (visible quand le bloc est touche)
+  const rimMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(st.neon), transparent: true, opacity: 0, toneMapped: false,
+    blending: THREE.AdditiveBlending, depthWrite: false });
+  const rim = new THREE.Mesh(new THREE.PlaneGeometry(st.shape === 'hex' ? faceW * 1.6 : st.L * 0.96, st.shape === 'hex' ? faceW * 1.6 : w * 0.9), rimMat);
+  rim.rotation.x = -Math.PI / 2; rim.position.y = st.H / 2 + 0.004; grp.add(rim);
   if (i % 3 === 0) {
     const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 6), wireMat);
-    wire.position.set(BL / 2 - 0.15, BH / 2 + 15, 0); grp.add(wire);
+    wire.position.set(faceX - 0.15, st.H / 2 + 15, 0); grp.add(wire);
   }
   scene.add(grp);
-  blocks.push({ grp, onMat, baseY: grp.position.y, hit: i < N ? HITS[i].t : Infinity });
+  blocks.push({ grp, onMat, rimMat, baseY: grp.position.y, hit: HITS[i].t });
 }
 
-// ---------- rails d'entree / sortie (deux fils paralleles) ----------
+// ---------- rail de sortie ----------
 const railMat = new THREE.MeshStandardMaterial({ color: 0x9a9aa6, metalness: 0.9, roughness: 0.25 });
-function railPath(ks, ky, kd) { // ks: indices fractionnaires de pave, ky: hauteur
-  return ks.map((k, j) => onSpiral(ang(k), ky[j], R + kd));
-}
-function makeRail(pts) {
-  for (const dr of [-0.17, 0.17]) {
-    const p = pts.map(v => { const r = Math.hypot(v.x, v.z), a = Math.atan2(v.z, v.x); return onSpiral(a, v.y, r + dr); });
-    const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(p), 200, 0.025, 8), railMat);
-    tube.castShadow = true; scene.add(tube);
-  }
-  // traverses
-  const curve = new THREE.CatmullRomCurve3(pts);
-  for (let u = 0.04, j = 0; u < 1; u += 0.08, j++) {
-    const v = curve.getPoint(u); const a = Math.atan2(v.z, v.x);
-    const t = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.4, 6), railMat);
-    t.position.set(v.x, v.y - 0.06, v.z); t.rotation.z = Math.PI / 2; t.rotation.y = -a; scene.add(t);
-    if (j % 3 === 1) { const hang = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 30, 4), wireMat);
-    hang.position.set(v.x, v.y + 15, v.z); scene.add(hang); }
-  }
-  return curve;
-}
-// rail de sortie : apres la derniere note, la bille repart
-const lastI = N - 1;
-const outKs = [lastI + 1.6, lastI + 2.6, lastI + 4, lastI + 6, lastI + 9];
-const outY0 = topY(lastI) - 0.9;
-const outCurve = makeRail(railPath(outKs, outKs.map((k, j) => outY0 - j * 0.35), 0));
 const RAIL_LIFT = 0.07 + BR;
+const E = land[N];
+const outPts = [0, 1.5, 3.2, 5.5, 8.5].map((k, j) => onSpiral(E.a - k / R * 1.6, E.y - RAIL_LIFT - j * 0.45, R));
+const outCurve = new THREE.CatmullRomCurve3(outPts);
+for (const dr of [-0.17, 0.17]) {
+  const p = outPts.map(v => { const r = Math.hypot(v.x, v.z), a = Math.atan2(v.z, v.x); return onSpiral(a, v.y, r + dr); });
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(p), 200, 0.025, 8), railMat);
+  tube.castShadow = true; scene.add(tube);
+}
+for (let u = 0.04, j = 0; u < 1; u += 0.08, j++) {
+  const v = outCurve.getPoint(u), a = Math.atan2(v.z, v.x);
+  const t = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.4, 6), railMat);
+  t.position.set(v.x, v.y - 0.06, v.z); t.rotation.z = Math.PI / 2; t.rotation.y = -a; scene.add(t);
+  if (j % 3 === 1) { const h = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 30, 4), wireMat); h.position.set(v.x, v.y + 15, v.z); scene.add(h); }
+}
 
 // ---------- bille ----------
 function planetTex() {
@@ -160,35 +213,34 @@ function planetTex() {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 const pt = planetTex();
+const ballPivot = new THREE.Group(); scene.add(ballPivot);
 const ball = new THREE.Mesh(new THREE.SphereGeometry(BR, 48, 32),
   new THREE.MeshStandardMaterial({ map: pt, emissiveMap: pt, emissive: 0xffffff, emissiveIntensity: 1.25, roughness: 0.25 }));
-ball.castShadow = true; scene.add(ball);
+ball.castShadow = true; ballPivot.add(ball);
 const halo = new THREE.Mesh(new THREE.SphereGeometry(BR * 1.25, 32, 16),
   new THREE.MeshBasicMaterial({ color: 0x7ffff0, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false }));
 ball.add(halo);
-const ballLight = new THREE.PointLight(0x5cffd8, 6, 5, 1.6); ball.add(ballLight);
+const ballLight = new THREE.PointLight(0x5cffd8, 6, 5, 1.6); ballPivot.add(ballLight);
 
-// ---------- trajectoire (analytique, deterministe) ----------
-const hitPos = i => onSpiral(ang(i), topY(i) + BR, R);
-const ease = x => x * x * (3 - 2 * x);
+// ---------- trajectoire : physique reelle, vitesse horizontale constante ----------
+const P = l => onSpiral(l.a, l.y, l.r);
+function hopIndex(t) {
+  let lo = 0, hi = N - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (HITS[m].t <= t) lo = m; else hi = m - 1; }
+  return lo;
+}
 function ballPos(t) {
   const t0 = HITS[0].t;
-  if (t < t0) {                                         // chute directe sur le premier pave
-    const p = hitPos(0); p.y += 9.0 * (t0 - t) ** 2 + 2.4 * (t0 - t); return p;
+  if (t < t0) { const p = P(land[0]); p.y += 9.0 * (t0 - t) ** 2 + 2.4 * (t0 - t); p.a = land[0].a; return p; }
+  const tl = HITS[N - 1].t + hops[N - 1].T;
+  if (t >= tl) {                                         // roule sur le rail de sortie, meme vitesse
+    const u = Math.min(1, (t - tl) * V / outCurve.getLength());
+    return outCurve.getPointAt(u).add(new THREE.Vector3(0, RAIL_LIFT, 0));
   }
-  for (let i = 0; i < N; i++) {
-    const h = HITS[i], tEnd = h.t + h.dur;
-    if (t < tEnd) {
-      const a = hitPos(i);
-      const b = i < N - 1 ? hitPos(i + 1) : outCurve.getPointAt(0).add(new THREE.Vector3(0, RAIL_LIFT, 0));
-      const s = (t - h.t) / h.dur;
-      const height = 0.35 + 0.55 * (h.dur / 0.32) ** 0.8;
-      const p = a.clone().lerp(b, s); p.y += height * 4 * s * (1 - s); return p;
-    }
-  }
-  const tl = HITS[N - 1].t + HITS[N - 1].dur;             // repart sur le rail de sortie
-  const u = Math.min(1, (t - tl) / (TL.end - tl + 0.4));
-  return outCurve.getPointAt(Math.min(1, u * (0.6 + 0.4 * u))).add(new THREE.Vector3(0, RAIL_LIFT, 0));
+  const i = hopIndex(t), h = hops[i], s = t - HITS[i].t, k = Math.min(1, s / h.T);
+  const A = land[i], B = land[i + 1];
+  const a = A.a + (B.a - A.a) * k, r = A.r + (B.r - A.r) * k;
+  return onSpiral(a, A.y + h.vy * s - h.g * s * s / 2, r);
 }
 function smoothBall(t, win = 0.45, n = 13) {
   const v = new THREE.Vector3();
@@ -202,32 +254,40 @@ composer.addPass(new RenderPass(scene, camera));
 composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.75, 0.55, 0.82));
 composer.addPass(new OutputPass());
 
-// ---------- rendu d'une image a l'instant t ----------
+const ease = x => x * x * (3 - 2 * x);
 function renderAt(t) {
   const p = ballPos(t);
-  ball.position.copy(p);
+  ballPivot.position.copy(p);
   ball.rotation.set(t * 2.1, -t * 3.3, 0);
   halo.material.opacity = 0.10 + 0.04 * Math.sin(t * 9);
 
-  // paves : allumage + petite secousse a l'impact
+  // ecrasement a l'impact (style "ecrase")
+  ballPivot.scale.set(1, 1, 1);
+  if (t >= HITS[0].t && t < HITS[N - 1].t + hops[N - 1].T) {
+    const i = hopIndex(t), dt = t - HITS[i].t;
+    const prevSquash = i > 0 && fallStyle(i - 1).squash, curSquash = fallStyle(i).squash;
+    const toNext = hops[i].T - dt;
+    let q = 0;
+    if (prevSquash || curSquash) q = Math.max(Math.exp(-dt / 0.05), 0);
+    if (curSquash && toNext < 0.05) q = Math.max(q, 1 - toNext / 0.05);
+    if (q > 0) { const sy = 1 - 0.38 * q, sx = 1 + 0.25 * q; ballPivot.scale.set(sx, sy, sx); ballPivot.position.y -= BR * (1 - sy); }
+  }
+
   for (const b of blocks) {
     const dt = t - b.hit;
     let glow = 0, dip = 0;
-    if (dt >= 0) {
-      glow = Math.max(Math.exp(-dt / 0.55), 0);
-      dip = -0.07 * Math.exp(-dt / 0.09) * Math.cos(dt * 40);
-    }
+    if (dt >= 0) { glow = Math.exp(-dt / 0.55); dip = -0.07 * Math.exp(-dt / 0.09) * Math.cos(dt * 40); }
     b.onMat.opacity = Math.min(1, glow * 1.4);
     b.onMat.color.setScalar(1 + 2.2 * glow);
+    b.rimMat.opacity = 0.18 * Math.exp(-Math.max(dt, 0) / 0.25) * (dt >= 0);
     b.grp.position.y = b.baseY + dip;
   }
 
-  // camera : suit la bille, tourne autour de la spirale
   const sb = smoothBall(t), look = smoothBall(t + 0.25, 0.35, 9);
   const a = Math.atan2(sb.z, sb.x);
   const intro = 1 - ease(Math.min(1, Math.max(0, t) / 1.2));
   const phi = a + 0.6 + 0.2 * Math.sin(t * 0.35) + 0.4 * intro;
-  const rc = 14.0 + 1.0 * Math.sin(t * 0.42 + 0.6) + 2.5 * intro;
+  const rc = 15.5 + 1.0 * Math.sin(t * 0.42 + 0.6) + 2.5 * intro;
   const hc = 7.8 + 1.2 * Math.sin(t * 0.31 + 1.2) + 2.0 * intro;
   camera.position.set(rc * Math.cos(phi), sb.y + hc, rc * Math.sin(phi));
   camera.lookAt(look.x * 0.8, look.y - 1.6, look.z * 0.8);
