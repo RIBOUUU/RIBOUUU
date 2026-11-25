@@ -1,0 +1,659 @@
+"""Combat de bonhommes sur 3 jours : chorégraphie générée sur les kicks, coups réalistes, caméra 3D/2D, jour/nuit."""
+import sys, subprocess, math, random
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+AUDIO, OUT = sys.argv[1], sys.argv[2]
+W, H, FPS = 540, 960, 30
+START, DUR = 28.0, 30.0
+random.seed(11); np.random.seed(11)
+
+# ============================== musique : kicks ==============================
+SR = 22050; AF = 100
+y = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", AUDIO, "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"],
+                                 capture_output=True).stdout, np.int16) / 32768.
+hop = SR // AF; fr = np.fft.rfftfreq(1024, 1/SR); band = (fr > 30) & (fr < 150)
+low = np.array([np.abs(np.fft.rfft(y[i*hop:i*hop+1024]))[band].sum() for i in range(len(y)//hop - 11)])
+low /= low.max()
+KICKS = [i/AF - START for i in range(8, len(low)-9)
+         if low[i] == low[i-8:i+9].max() and low[i] > 0.45 and START <= i/AF <= START + DUR]
+
+# ============================== poses (face à droite, hanche = origine, y vers le bas) ==============================
+# ordre : cou, tête, coude avant, main avant, coude arrière, main arrière, genou avant, pied avant, genou arrière, pied arrière
+P = {
+ "stance":  [(4,-58),(6,-80),(20,-44),(32,-62),(-6,-42),(14,-58),(16,24),(24,54),(-14,26),(-26,54)],
+ "jab_w":   [(0,-58),(0,-80),(14,-46),(24,-60),(-8,-42),(10,-58),(16,24),(24,54),(-14,26),(-26,54)],
+ "jab":     [(10,-57),(14,-78),(34,-58),(60,-62),(-6,-42),(12,-58),(18,24),(30,54),(-16,24),(-30,54)],
+ "cross_w": [(-6,-57),(-10,-79),(18,-46),(30,-62),(-18,-44),(-8,-60),(16,24),(24,54),(-14,26),(-26,54)],
+ "cross":   [(16,-55),(24,-76),(10,-44),(22,-60),(30,-56),(58,-62),(20,24),(32,54),(-12,26),(-34,52)],
+ "hook_w":  [(-4,-57),(-6,-79),(4,-50),(-6,-66),(-8,-42),(10,-58),(16,24),(24,54),(-14,26),(-26,54)],
+ "hook":    [(12,-56),(18,-77),(30,-64),(52,-60),(-6,-44),(12,-60),(18,24),(28,54),(-14,24),(-28,54)],
+ "upper_w": [(10,-48),(16,-68),(18,-30),(28,-22),(-6,-36),(10,-52),(22,14),(24,44),(-18,18),(-30,44)],
+ "upper":   [(10,-60),(14,-82),(30,-60),(36,-96),(-8,-42),(8,-56),(16,24),(24,54),(-18,24),(-30,54)],
+ "elbow_w": [(-4,-57),(-6,-79),(-6,-56),(10,-66),(-8,-42),(10,-58),(16,24),(24,54),(-14,26),(-26,54)],
+ "elbow":   [(16,-54),(24,-74),(36,-62),(14,-66),(0,-44),(16,-58),(20,24),(30,54),(-14,26),(-30,52)],
+ "knee_w":  [(6,-57),(10,-78),(26,-50),(44,-60),(14,-50),(36,-60),(16,24),(24,54),(-14,26),(-26,54)],
+ "knee":    [(10,-56),(16,-76),(30,-46),(40,-30),(18,-44),(30,-28),(30,-20),(36,8),(-6,26),(-12,54)],
+ "kick_w":  [(-6,-57),(-10,-78),(16,-46),(28,-62),(-12,-42),(4,-58),(26,-14),(16,14),(-6,26),(-12,54)],
+ "kick":    [(-12,-56),(-18,-77),(8,-48),(22,-62),(-26,-44),(-40,-28),(32,-10),(68,-32),(-4,26),(-8,54)],
+ "hkick_w": [(-10,-56),(-16,-77),(12,-48),(24,-62),(-20,-44),(-30,-30),(26,-30),(8,-6),(-4,26),(-8,54)],
+ "hkick":   [(-24,-50),(-36,-68),(-4,-46),(10,-60),(-34,-38),(-52,-28),(32,-32),(64,-58),(-2,26),(-6,54)],
+ "bkick_w": [(-4,-56),(-6,-78),(16,-46),(28,-60),(-8,-42),(8,-58),(14,26),(18,54),(-20,6),(-6,28)],
+ "bkick":   [(22,-52),(34,-70),(34,-40),(44,-26),(10,-42),(24,-30),(14,26),(18,54),(-34,-6),(-70,-12)],
+ "sweep_w": [(8,-44),(14,-64),(20,-30),(30,-20),(-4,-34),(6,-24),(24,12),(26,38),(-20,18),(-34,38)],
+ "sweep":   [(-16,-36),(-24,-56),(-24,-16),(-30,20),(-8,-14),(-12,20),(28,8),(62,18),(-6,14),(-26,20)],
+ "hb_w":    [(-10,-56),(-18,-76),(26,-52),(48,-58),(20,-50),(42,-56),(16,24),(24,54),(-14,26),(-26,54)],
+ "hb":      [(22,-52),(38,-66),(30,-50),(50,-56),(24,-48),(44,-52),(22,24),(32,54),(-12,26),(-32,52)],
+ "grab":    [(10,-57),(14,-78),(30,-56),(54,-62),(26,-52),(50,-58),(18,24),(30,54),(-16,24),(-30,54)],
+ "throw":   [(-24,-50),(-38,-64),(-20,-72),(-40,-86),(-14,-74),(-34,-90),(14,24),(26,54),(-18,24),(-34,52)],
+ "hit_head":[(-14,-54),(-30,-68),(-2,-46),(10,-30),(-24,-44),(-36,-58),(10,24),(18,54),(-14,24),(-28,54)],
+ "hit_body":[(18,-40),(30,-54),(16,-26),(14,-8),(10,-24),(8,-6),(18,20),(20,50),(-14,22),(-24,50)],
+ "hit_legs":[(6,-56),(10,-76),(18,-40),(28,-56),(-8,-38),(6,-54),(22,12),(28,36),(-8,32),(-34,34)],
+ "block":   [(-2,-56),(0,-78),(18,-56),(20,-78),(12,-50),(16,-70),(16,24),(26,54),(-16,24),(-30,54)],
+ "parry":   [(-4,-57),(-6,-79),(24,-62),(44,-80),(4,-46),(16,-62),(16,24),(26,54),(-16,24),(-30,54)],
+ "leanback":[(-22,-52),(-38,-66),(-6,-50),(4,-64),(-24,-44),(-12,-58),(14,26),(26,54),(-20,22),(-30,52)],
+ "duck":    [(16,-32),(26,-48),(22,-22),(36,-34),(4,-20),(20,-30),(26,6),(22,32),(-16,16),(-30,32)],
+ "tuck":    [(4,-40),(10,-58),(20,-26),(24,-6),(10,-24),(14,-4),(24,-14),(20,10),(18,-8),(10,14)],
+ "land":    [(18,-44),(26,-62),(28,-20),(30,30),(0,-34),(-24,-52),(28,4),(26,30),(-10,18),(-30,30)],
+ "dash":    [(30,-46),(44,-62),(16,-30),(0,-16),(10,-34),(-8,-22),(26,14),(20,40),(-20,22),(-46,36)],
+ "run_a":   [(14,-56),(20,-77),(-6,-40),(4,-26),(22,-44),(36,-52),(22,14),(18,40),(-10,26),(-30,44)],
+ "run_b":   [(14,-56),(20,-77),(22,-44),(36,-52),(-6,-40),(4,-26),(-10,26),(-30,44),(22,14),(18,40)],
+ "flail":   [(-6,-56),(-10,-78),(-24,-70),(-36,-92),(16,-70),(30,-90),(18,18),(10,46),(-10,26),(-24,46)],
+}
+P = {k: np.array(v, float) for k, v in P.items()}
+def pose_of(name, t):
+    if name == "run":
+        s = 0.5 + 0.5*math.sin(t*2*math.pi*4); return P["run_a"]*s + P["run_b"]*(1-s)
+    return P[name]
+
+# ============================== squelette ==============================
+# points : 0 hanche,1 buste,2 cou,3 tête,4 coude av,5 main av,6 coude arr,7 main arr,8 genou av,9 pied av,10 genou arr,11 pied arr
+BD = [(0,1,-1),(1,2,0),(2,3,1),(2,4,1),(4,5,3),(2,6,1),(6,7,5),(0,8,-1),(8,9,7),(0,10,-1),(10,11,9)]
+LEN = np.array([29, 29, 22, 22, 24, 22, 24, 30, 30, 30, 30], float)
+BONES = [(0,1),(1,2),(2,3),(2,4),(4,5),(2,6),(6,7),(0,8),(8,9),(0,10),(10,11)]
+OMEGA = np.array([34, 24, 15, 30, 22, 30, 22, 32, 26, 32, 26], float); ZETA = 0.55
+DELAY = np.array([0.015, 0.03, 0.05, 0.04, 0.06, 0.04, 0.06, 0, 0, 0, 0])   # chaîne cinétique : jambes -> hanche -> épaule -> poing
+LEAD = 0.06
+def pts12(pose):
+    p = np.vstack([[0, 0], pose]); return np.array([p[0], (p[0]+p[1])/2, *p[1:]])
+_rel_cache = {}
+def rel_angles(pose):
+    q = pts12(pose); ab = []; out = []
+    for a, b, par in BD:
+        ang = math.atan2(q[b][1]-q[a][1], q[b][0]-q[a][0]); ab.append(ang)
+        out.append((ang - (ab[par] if par >= 0 else 0) + math.pi) % (2*math.pi) - math.pi)
+    return np.array(out)
+def fk(rel):
+    q = np.zeros((12, 2)); ab = np.zeros(11)
+    for i, (a, b, par) in enumerate(BD):
+        ab[i] = rel[i] + (ab[par] if par >= 0 else 0)
+        q[b] = q[a] + LEN[i]*np.array([math.cos(ab[i]), math.sin(ab[i])])
+    return q
+def ik2(root, tgt, L1, L2, pref):
+    v = tgt - root; dist = float(np.clip(np.hypot(*v), 1e-3, L1 + L2 - 0.5)); a = math.atan2(v[1], v[0])
+    b = math.acos(np.clip((L1*L1 + dist*dist - L2*L2)/(2*L1*dist), -1, 1))
+    k1 = root + L1*np.array([math.cos(a+b), math.sin(a+b)]); k2 = root + L1*np.array([math.cos(a-b), math.sin(a-b)])
+    knee = k1 if (k1 - k2) @ np.array(pref) > 0 else k2
+    return knee, root + dist*np.array([math.cos(a), math.sin(a)])
+LIMB = {"fha": (2, 4, 5, 22, 24, (-0.3, 1)), "bha": (2, 6, 7, 22, 24, (-0.3, 1)),
+        "ffo": (0, 8, 9, 30, 30, (1, 0)), "bfo": (0, 10, 11, 30, 30, (1, 0))}
+END = {"fha": 5, "bha": 7, "ffo": 9, "bfo": 11, "fel": 4, "fkn": 8, "head": 3}
+ZONE = {"head": 3, "chest": 1, "belly": 0.6, "legs": 8, "neck": 2}
+class Body:
+    def __init__(self, pose): self.a = rel_angles(pose); self.v = np.zeros(11)
+    def step(self, target, dt):
+        for _ in range(4):
+            d = (target - self.a + math.pi) % (2*math.pi) - math.pi
+            self.v += (OMEGA**2*d - 2*ZETA*OMEGA*self.v)*dt/4; self.a += self.v*dt/4
+
+# ============================== pistes d'animation ==============================
+EASE = {"lin": lambda p: p, "in": lambda p: p*p, "out": lambda p: 1-(1-p)**2, "io": lambda p: p*p*(3-2*p)}
+BOTH = frozenset("fb"); NONE = frozenset()
+class Track:
+    def __init__(s, **k): s.keys = [dict(t=0.0, x=0.0, h=0.0, rot=0.0, spin=0.0, pose="stance", plant=BOTH, F=1, ease="io") | k]
+    def seg(s, t):
+        ks = s.keys
+        if t <= ks[0]["t"]: return ks[0], ks[0], 1.0
+        for a, b in zip(ks, ks[1:]):
+            if t <= b["t"]: return a, b, (t - a["t"])/max(1e-6, b["t"] - a["t"])
+        return ks[-1], ks[-1], 1.0
+    def state(s, t):
+        a, b, p = s.seg(t); e = EASE[b["ease"]](p)
+        q = min(1, p/0.35); q = q*q*(3-2*q)
+        o = {c: a[c] + (b[c] - a[c])*e for c in ("x", "h", "rot", "spin")}
+        o["pose"] = pose_of(a["pose"], t)*(1-q) + pose_of(b["pose"], t)*q
+        o["name"] = b["pose"] if q > 0.5 else a["pose"]
+        o["plant"] = b["plant"] if p >= 1 else (a["plant"] & b["plant"])
+        o["F"] = a["F"] if p < 1 else b["F"]
+        return o
+    def add(s, t, **kw):
+        st = s.state(t); last = [k for k in s.keys if k["t"] < t - 1e-6][-1]
+        base = dict(last, t=t, x=st["x"], h=st["h"], rot=st["rot"], spin=st["spin"], ease="io")
+        if "dspin" in kw: base["spin"] = st["spin"] + kw.pop("dspin")
+        base.update(kw)
+        s.keys = [k for k in s.keys if k["t"] < t - 1e-6] + [base]
+    def turn(s, t, dur=0.2):
+        st = s.state(t); F = [k for k in s.keys if k["t"] <= t][-1]["F"]
+        s.add(t); s.add(t + 1e-3, F=-F, spin=st["spin"] + 180); s.add(t + dur, spin=st["spin"] + 360, ease="io")
+
+# ============================== metteur en scène ==============================
+MOVES = {  # pose armée, pose frappe, membre, allonge, temps d'armé, zones, appui, rotation, poids, force
+ "jab":   ("jab_w", "jab", "fha", 70, 0.12, ["head"], BOTH, 0, 3, 1.0),
+ "cross": ("cross_w", "cross", "bha", 74, 0.18, ["head", "chest"], BOTH, 0, 3, 1.2),
+ "hook":  ("hook_w", "hook", "fha", 58, 0.2, ["head"], BOTH, 0, 2, 1.4),
+ "upper": ("upper_w", "upper", "fha", 50, 0.22, ["head"], BOTH, 0, 2, 1.8),
+ "elbow": ("elbow_w", "elbow", "fel", 42, 0.15, ["head"], BOTH, 0, 1, 1.4),
+ "knee":  ("knee_w", "knee", "fkn", 40, 0.16, ["belly"], frozenset("b"), 0, 1, 1.4),
+ "fkick": ("kick_w", "kick", "ffo", 88, 0.2, ["belly", "chest"], frozenset("b"), 0, 2, 1.5),
+ "hkick": ("hkick_w", "hkick", "ffo", 84, 0.26, ["head"], frozenset("b"), 0, 2, 2.0),
+ "bkick": ("bkick_w", "bkick", "bfo", 86, 0.3, ["chest", "belly"], frozenset("f"), 180, 1, 2.2),
+ "sweep": ("sweep_w", "sweep", "ffo", 72, 0.25, ["legs"], NONE, 0, 1, 1.6),
+ "headb": ("hb_w", "hb", "head", 36, 0.18, ["head"], BOTH, 0, 1, 1.6),
+ "throw": ("grab", "grab", "fha", 50, 0.2, ["neck"], BOTH, 0, 1, 2.4),
+}
+REACT_POSE = {"head": "hit_head", "neck": "hit_head", "chest": "hit_body", "belly": "hit_body", "legs": "hit_legs"}
+T = [Track(x=-80, h=950, pose="tuck", plant=NONE, F=1), Track(x=700, F=-1)]
+IKS = [[], []]; FX = []; SHOT3 = []
+def fx(t, kind, s, at, victim=None, zone=None): FX.append(dict(t=t, kind=kind, s=s, at=at, victim=victim, zone=zone))
+def shot3(t0, t1, **k):
+    if all(t1 < a or t0 > b for a, b, _ in SHOT3): SHOT3.append((t0, t1, k))
+def rshot(t0, t1):
+    shot3(t0, t1, yaw=random.choice([-1, 1])*random.uniform(30, 80), pitch=random.choice([-12, -6, 8, 40]),
+          dist=random.uniform(250, 380), orbit=random.choice([-1, 1])*random.uniform(20, 60), follow="both")
+
+# --- intro : l'orbe tombe à l'aube, le rouge arrive en courant ---
+T[0].add(1.7, h=0, pose="land", plant=NONE, ease="in"); T[0].add(2.6, pose="land")
+T[0].add(3.3, pose="stance", plant=BOTH); T[0].add(3.9, x=10)
+T[1].add(2.3, pose="run", plant=NONE, ease="lin"); T[1].add(3.5, x=170, ease="lin")
+T[1].add(3.75, x=125, pose="duck", plant=BOTH, ease="out"); T[1].add(4.0, pose="stance")
+fx(1.7, "land", 3, (0, 0)); fx(3.6, "dust", 0.6, (1, 9))
+shot3(1.7, 2.6, yaw=40, pitch=-8, dist=230, orbit=14, follow="A")
+
+def strike(a, d, m, ti, outc, kd, wu, t_next):
+    wp, sp, limb, reach, _, zones, plant, spin, _, power = MOVES[m]
+    Ta, Td = T[a], T[d]; ts = ti - wu
+    sa, sd = Ta.state(ts), Td.state(ts); Fa = sa["F"]
+    zone = random.choice(zones); zi = ZONE[zone]
+    xa_imp = sd["x"] - Fa*reach + (Fa*10 if outc == "dodge" else 0)
+    # attaquant : armé (poids en arrière) -> explosion (pas en avant) -> maintien -> retour en garde
+    Ta.add(ts)
+    Ta.add(ts + wu*0.6, pose=wp, x=sa["x"] - Fa*3 + (xa_imp - sa["x"])*0.2, plant=plant,
+           ease="out", **({"dspin": spin*0.3} if spin else {}))
+    Ta.add(ti, pose=sp, x=xa_imp, plant=plant, ease="in", **({"dspin": spin*0.7} if spin else {}))
+    if outc in ("hit", "block") and m != "throw":
+        Ta.add(ti + 0.08, pose=sp, x=xa_imp + Fa*3, ease="out")
+        Ta.add(ti + 0.36, pose="stance", x=xa_imp - Fa*6, plant=BOTH, **({"dspin": spin} if spin else {}))
+    elif m != "throw":   # coup dans le vide : emporté par l'élan
+        Ta.add(ti + 0.12, pose=sp if spin else "dash", x=xa_imp + Fa*24, ease="out")
+        Ta.add(ti + 0.45, pose="stance", x=xa_imp + Fa*16, plant=BOTH, **({"dspin": spin} if spin else {}))
+    if limb in LIMB and m != "sweep":
+        tgt = {"hit": ("zone", d, zi, (0, 0)), "block": ("joint", d, 5, (0, 0)),
+               "dodge": ("fix", d, zi, (0, 0)), "parry": ("fix", d, zi, (0, 30))}[outc]
+        IKS[a].append(dict(t0=ts + wu*0.3, t1=ti, t2=ti + 0.32, limb=limb, tgt=tgt, cap=None))
+    xd = sd["x"]
+    if m == "throw" and outc == "hit":   # saisie puis projection par-dessus
+        IKS[a].append(dict(t0=ts, t1=ti, t2=ti + 0.3, limb="bha", tgt=("zone", d, 2, (0, 0)), cap=None))
+        Ta.add(ti + 0.35, pose="throw", x=xa_imp - Fa*6)
+        Ta.add(ti + 0.7, pose="stance", plant=BOTH)
+        Td.add(ti); Td.add(ti + 0.06, pose="hit_head", plant=NONE)
+        Td.add(ti + 0.24, x=xa_imp + Fa*4, h=95, rot=-170, pose="flail", ease="out")
+        Td.add(ti + 0.44, x=xa_imp - Fa*78, h=0, rot=-270, pose="hit_head", ease="in")
+        fx(ti, "hit", 1.0, (d, 2), d, "neck"); fx(ti + 0.44, "land", 2.4, (d, 0), d)
+        Ta.turn(ti + 0.75)
+        tg = max(ti + 1.0, t_next - 1.5)
+        Td.add(tg); Td.add(tg + 0.25, rot=-330, pose="tuck", h=6); Td.add(tg + 0.45, rot=-360, pose="land", h=0)
+        Td.add(tg + 0.6, pose="stance", plant=BOTH); Td.turn(tg + 0.62)
+        rshot(ti - 0.2, ti + 1.0); return
+    if outc == "hit":
+        fx(ti, "hit", power, (d, zi), d, zone)
+        rp = REACT_POSE[zone]; kbd = 10 + 14*power
+        Td.add(ti)
+        if kd:   # K.O. : chute en arrière, reste au sol, se relève
+            Td.add(ti + 0.06, pose=rp, x=xd + Fa*12, plant=NONE, ease="out")
+            Td.add(ti + (0.3 if zone == "legs" else 0.42), pose="hit_head", rot=-90, x=xd + Fa*55, ease="in")
+            fx(ti + (0.3 if zone == "legs" else 0.42), "land", 1.6, (d, 0), d)
+            tg = max(ti + 0.9, t_next - 1.45)
+            Td.add(tg); Td.add(tg + 0.22, pose="tuck", rot=-35, h=8); Td.add(tg + 0.42, pose="land", rot=0, h=0)
+            Td.add(tg + 0.62, pose="stance", plant=BOTH)
+            rshot(ti - 0.25, ti + 0.9)
+        else:
+            pl = NONE if rp == "hit_legs" else BOTH
+            Td.add(ti + 0.05, pose=rp, x=xd + Fa*kbd*0.4, plant=pl, ease="out")
+            Td.add(ti + 0.3, pose=rp, x=xd + Fa*kbd, ease="out")
+            Td.add(ti + 0.7, pose="stance", plant=BOTH)
+            if power >= 2: rshot(ti - 0.25, ti + 0.7)
+    elif outc == "block":
+        Td.add(ts + wu*0.3, pose="block"); Td.add(ti); Td.add(ti + 0.08, x=xd + Fa*8, ease="out")
+        Td.add(ti + 0.4, pose="stance"); fx(ti, "block", 0.8, (d, 5), d, "block")
+    elif outc == "parry":
+        Td.add(ti - 0.1, pose="parry"); Td.add(ti + 0.28, pose="stance")
+        if limb in LIMB: IKS[d].append(dict(t0=ti - 0.16, t1=ti, t2=ti + 0.2, limb="fha", tgt=("joint", a, END[limb], (0, 0)), cap=None))
+        fx(ti, "parry", 0.7, (a, END[limb]), a, "head")
+    else:  # esquive
+        if zone in ("head", "neck"):
+            Td.add(ti - 0.14, pose=random.choice(["leanback", "duck"]), x=xd + Fa*8, ease="out"); Td.add(ti + 0.3, pose="stance")
+        else:
+            Td.add(ti - 0.16, pose="leanback", plant=NONE); Td.add(ti - 0.02, h=22, x=xd + Fa*30, ease="out")
+            Td.add(ti + 0.14, h=0, x=xd + Fa*44, pose="stance", plant=BOTH, ease="in")
+        fx(ti, "whoosh", 0.4, (a, END[limb]))
+
+# --- regroupe les kicks en échanges ---
+ks = [k for k in KICKS if k >= 4.08]
+groups, cur = [], [ks[0]]
+for k in ks[1:]:
+    if k - cur[-1] <= 0.62 and len(cur) < 4: cur.append(k)
+    else: groups.append(cur); cur = [k]
+groups.append(cur)
+att, last_m = 0, None
+for gi, g in enumerate(groups):
+    a, d = att, 1 - att
+    t_next = groups[gi+1][0] if gi + 1 < len(groups) else DUR + 2
+    final = gi == len(groups) - 1
+    # se remettre à distance de combat avant l'échange
+    tp = g[0] - 0.75
+    sa, sd = T[a].state(tp), T[d].state(tp)
+    if abs(sd["x"] - sa["x"]) > 150 and tp > 4.1:
+        T[a].add(tp); T[a].add(g[0] - 0.3, x=sd["x"] - sa["F"]*120, pose="stance")
+    for si, ti in enumerate(g):
+        last = si == len(g) - 1
+        if final and last:   # choc final : les deux poings se percutent
+            sa, sd = T[a].state(ti - 0.4), T[d].state(ti - 0.4)
+            mid = (sa["x"] + sd["x"])/2
+            for i_, s_ in ((a, sa), (d, sd)):
+                T[i_].add(ti - 0.4); T[i_].add(ti - 0.22, pose="cross_w", ease="out")
+                T[i_].add(ti, pose="cross", x=mid - s_["F"]*46, ease="in"); T[i_].add(ti + 0.12, pose="cross")
+                T[i_].add(ti + 0.5, pose="hit_head", x=mid - s_["F"]*80, ease="out"); T[i_].add(ti + 1.0, pose="stance")
+                IKS[i_].append(dict(t0=ti - 0.25, t1=ti, t2=ti + 0.3, limb="bha", tgt=("pt", None, (mid, 78), (0, 0)), cap=None))
+            fx(ti, "clash", 4, (a, 7)); shot3(ti - 0.5, ti + 0.45, yaw=28, pitch=-12, dist=250, orbit=14, follow="both")
+            break
+        prev = g[si-1] if si else ti - 0.6
+        avail = ti - prev - 0.07
+        nxt_gap = t_next - ti
+        cands = [m for m, M in MOVES.items() if M[4] <= avail and m != last_m
+                 and (m != "throw" or (last and nxt_gap > 2.0))]
+        if not cands: cands = ["jab"]
+        m = random.choices(cands, [MOVES[c][8] for c in cands])[0]; last_m = m
+        wu = min(MOVES[m][4], max(0.06, avail))
+        outc = "hit" if m == "throw" else random.choices(["hit", "block", "dodge", "parry"],
+                                                       [0.8, 0.1, 0.05, 0.05] if last else [0.5, 0.22, 0.16, 0.12])[0]
+        kd = (outc == "hit" and last and nxt_gap > 1.9 and m in ("sweep", "hkick", "bkick", "upper", "headb")
+              and random.random() < 0.7)
+        strike(a, d, m, ti, outc, kd, wu, t_next)
+        if outc == "parry": a, d = d, a   # la parade donne l'initiative
+    att = d if random.random() < 0.7 else a
+
+# plans de caméra : 2D par défaut, 3D sur les gros moments + un plan large à chaque lever du soleil
+DAY = 10.0; SUNRISE0 = 1.8
+for k in range(1, 3): shot3(SUNRISE0 + k*DAY - 0.2, SUNRISE0 + k*DAY + 1.3, yaw=-35, pitch=14, dist=560, orbit=22, follow="both")
+SHOT3.sort()
+def shot_at(t):
+    if t < 1.7: return ("orb", None)
+    for i, (a, b, k) in enumerate(SHOT3):
+        if a <= t < b: return (i, k)
+    return ("2d", None)
+
+HITS = [(e["t"], e["s"]) for e in FX if e["kind"] in ("hit", "clash", "land") and e["s"] >= 1]
+def anim_time(t):   # arrêt sur image à l'impact, rattrapé juste après : synchro musique conservée
+    lag = 0.0
+    for te, s in HITS:
+        dz = 0.04 + 0.025*s
+        if te <= t < te + dz: lag += t - te
+        elif te + dz <= t < te + dz + 0.2: lag += dz*(1 - (t - te - dz)/0.2)
+    return t - lag
+
+# ============================== ciel : jour / nuit ==============================
+def mix(a, b, w): return tuple(a[i] + (b[i] - a[i])*w for i in range(3))
+NIGHT = ((6, 8, 22), (20, 22, 46)); TWI = ((62, 48, 112), (255, 128, 70)); DAYC = ((62, 124, 210), (178, 204, 232))
+def sky_state(t):
+    ph = 2*math.pi*(t - SUNRISE0)/DAY; e = math.sin(ph)
+    if e < 0: w = min(1, -e/0.35); top, hor = mix(TWI[0], NIGHT[0], w), mix(TWI[1], NIGHT[1], w)
+    else: w = min(1, e/0.4); top, hor = mix(TWI[0], DAYC[0], w), mix(TWI[1], DAYC[1], w)
+    L = 0.32 + 0.68*float(np.clip((e + 0.2)/0.5, 0, 1))
+    return ph, e, top, hor, L
+STARS = [(random.uniform(-1.6, 1.6), random.uniform(0.08, 1.2), random.uniform(0, 6)) for _ in range(160)]
+CLOUDS = [[random.uniform(-1.6, 1.6), random.uniform(0.12, 0.7), random.uniform(40, 90)] for _ in range(9)]
+try:
+    FONT = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 46)
+except OSError:
+    FONT = ImageFont.load_default()
+
+# ============================== rendu ==============================
+def look(Tg, yaw, pitch, dist):
+    yw, p = math.radians(yaw), math.radians(pitch)
+    C = Tg + dist*np.array([math.sin(yw)*math.cos(p), math.sin(p), math.cos(yw)*math.cos(p)]); C[1] = max(C[1], 8)
+    fw = Tg - C; fw /= np.linalg.norm(fw); rt = np.cross(fw, [0, 1, 0]); rt /= np.linalg.norm(rt)
+    return C, fw, rt, np.cross(rt, fw)
+ruins = []
+for k in range(110):
+    an = random.uniform(0, 2*math.pi); R = random.uniform(5000, 6500)
+    ruins.append((100 + R*math.sin(an), -R*math.cos(an), random.uniform(80, 260), random.uniform(60, 260)))
+ash = [[random.uniform(0, W), random.uniform(0, H), random.uniform(0.3, 1.2)] for _ in range(60)]
+yy, xx = np.mgrid[0:H, 0:W]
+vign = (1 - 0.6*(((xx-W/2)/(W*0.75))**2 + ((yy-H/2)/(H*0.7))**2)).clip(0.3, 1)[..., None]
+ZOFF = np.array([0, 0, 0, 0, 7, 7, -7, -7, 7, 7, -7, -7], float)
+COL = [(110, 235, 255), (255, 55, 75)]
+
+ff = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
+                       "-r", str(FPS), "-i", "-", "-ss", str(START), "-t", str(DUR), "-i", AUDIO,
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-c:a", "aac", "-shortest", OUT],
+                      stdin=subprocess.PIPE)
+bodies = [Body(P["tuck"]), Body(P["stance"])]
+feet = [dict(anc=[None, None], stp=[None, None], last=[0.0, 0.0]) for _ in range(2)]
+prevsk = [np.zeros((12, 2)), np.zeros((12, 2))]
+hitflash = np.zeros(2); camT = np.array([-80.0, 750.0, 0.0]); zoom = 1.0; cur_shot = None
+shake = flash = 0.0; sparks = []; rings = []; lines_t = -99; trails = [[], []]
+fired = set(); ta_prev = 0.0; L_prev = 1.0
+
+def ik_target(ik, ta):
+    kind, j, idx, off = ik["tgt"]
+    if kind == "pt": return np.array(idx, float) + off
+    p = prevsk[j][int(idx)] if not isinstance(idx, float) else prevsk[j][0] + (prevsk[j][1] - prevsk[j][0])*idx/0.6*0.6 + (prevsk[j][1]-prevsk[j][0])*0.0
+    if kind == "fix":
+        if ik["cap"] is None: ik["cap"] = p.copy()
+        p = ik["cap"]
+    return p + np.array(off)
+
+def rig(i, st, ta, dta):
+    X, F, rot, h = st["x"], st["F"], st["rot"], st["h"]
+    c = math.cos(math.radians(st["spin"]))
+    q = fk(bodies[i].a)
+    qt = fk(rel_angles(st["pose"]))
+    upright = abs(((rot + 180) % 360) - 180) < 1 and h < 0.5 and abs(c) > 0.3
+    gp = st["plant"] if upright else NONE
+    hip_y = None
+    fs = feet[i]
+    if gp:
+        hh = max(qt[9][1] if "f" in gp else 0, qt[11][1] if "b" in gp else 0)
+        tg = {}
+        for li, (leg, kn, ft) in enumerate((("f", 8, 9), ("b", 10, 11))):
+            if leg not in gp: fs["anc"][li] = None; fs["stp"][li] = None; continue
+            want = X + F*c*qt[ft][0]
+            if fs["anc"][li] is None:
+                fs["anc"][li] = want if abs(fs["last"][li] - want) < 4 else fs["last"][li]
+                if abs(fs["last"][li] - want) >= 4: fs["stp"][li] = [ta, fs["last"][li], want]
+            stp = fs["stp"][li]
+            if stp:
+                p = min(1, (ta - stp[0])/0.11); fx_ = stp[1] + (stp[2] - stp[1])*p*p*(3-2*p); fy = 10*math.sin(math.pi*p)
+                if p >= 1: fs["anc"][li] = stp[2]; fs["stp"][li] = None
+            else:
+                fx_, fy = fs["anc"][li], 0.0
+                other = fs["stp"][1-li]
+                if other is None and abs(fs["anc"][li] - want) > 16: fs["stp"][li] = [ta, fs["anc"][li], want]
+            tg[li] = (fx_, fy)
+        for li, (_, fy) in tg.items():
+            dx = (tg[li][0] - X)*F/c
+            hh = min(hh, math.sqrt(max(1, 59.5**2 - dx*dx)) + fy)
+        for li, (fx_, fy) in tg.items():
+            kn, ft = (8, 9) if li == 0 else (10, 11)
+            knee, end = ik2(q[0], np.array([(fx_ - X)*F/c, hh - fy]), 30, 30, (1, 0))
+            q[kn], q[ft] = knee, end
+        hip_y = hh
+        # coups et parades : le poing / le pied va réellement sur la cible
+        if abs(c) > 0.5:
+            for ik in IKS[i]:
+                if not (ik["t0"] <= ta <= ik["t2"]): continue
+                if ta < ik["t1"]: w = (ta - ik["t0"])/max(1e-3, ik["t1"] - ik["t0"]); w = w*w*(3-2*w)
+                elif ta < ik["t1"] + 0.07: w = 1.0
+                else: w = max(0, 1 - (ta - ik["t1"] - 0.07)/max(1e-3, ik["t2"] - ik["t1"] - 0.07)); w = w*w*(3-2*w)
+                r0, mi, en, L1, L2, pref = LIMB[ik["limb"]]
+                tw = ik_target(ik, ta)
+                tl = np.array([(tw[0] - X)*F/c, hip_y - tw[1]])
+                knee, end = ik2(q[r0], tl, L1, L2, pref)
+                q[mi] = q[mi] + (knee - q[mi])*w; q[en] = q[en] + (end - q[en])*w
+    else:
+        for li, ft in ((0, 9), (1, 11)): fs["anc"][li] = None; fs["stp"][li] = None
+    r = math.radians(rot); cr, sr = math.cos(r), math.sin(r)
+    q = np.stack([(q[:, 0]*cr - q[:, 1]*sr)*c, q[:, 0]*sr + q[:, 1]*cr], 1)
+    if hip_y is None: hip_y = h + q[:, 1].max()
+    w = np.stack([X + F*q[:, 0], hip_y - q[:, 1]], 1)
+    fs["last"] = [w[9][0], w[11][0]]
+    return w
+
+for f in range(int(DUR*FPS)):
+    t = f/FPS
+    ta = anim_time(t); dta = ta - ta_prev; ta_prev = ta
+    day_i = int(max(0, t - SUNRISE0)//DAY)
+    st = [T[0].state(ta), T[1].state(ta)]
+    if dta > 0:
+        for i in range(2):
+            tg = np.zeros(11)
+            for dl in sorted(set(DELAY)):
+                s2 = T[i].state(ta + LEAD - dl); ra = rel_angles(s2["pose"])
+                tg[DELAY == dl] = ra[DELAY == dl]
+            if st[i]["name"] in ("stance", "block"):   # respiration + rebond sur le tempo, plus marqués avec la fatigue
+                amp = 1 + 0.45*day_i; bob = (math.sin(2*math.pi*(ta - 4.08)/0.4587) + 1)/2
+                tg[0] += 0.04*amp*math.sin(ta*3.1 + i); tg[1] += 0.06*amp*math.sin(ta*2.3 + i)
+                tg[3] += 0.1*amp*math.sin(ta*4 + i); tg[5] += 0.1*amp*math.sin(ta*3.6 + i + 1)
+            bodies[i].step(tg, dta)
+
+    # impacts
+    for k, e in enumerate(FX):
+        if k in fired or t < e["t"]: continue
+        fired.add(k)
+        j, idx = e["at"]
+        pos = prevsk[j][idx] if isinstance(idx, int) else prevsk[j][0] + (prevsk[j][1] - prevsk[j][0])*idx
+        fxp, fh, s, kind = pos[0], max(0, pos[1]), e["s"], e["kind"]
+        if kind not in ("dust", "whoosh"): shake = max(shake, s*6); flash = max(flash, min(1, s/3.2))
+        n = int(8 + s*14) if kind != "whoosh" else 0
+        for _ in range(n):
+            grd = kind in ("land", "dust")
+            an = random.uniform(0.1, math.pi - 0.1) if grd else random.uniform(0, 2*math.pi)
+            v = random.uniform(3, 6 + s*4)
+            col = (255, 225, 140) if kind in ("hit", "clash", "parry") else (190, 200, 255) if kind == "block" else (150, 120, 90)
+            sparks.append([fxp, fh, 0.0, math.cos(an)*v*(1.6 if grd else 1), math.sin(an)*v, random.uniform(-1, 1)*v*0.8, 1.0, col])
+        if kind == "whoosh":
+            for _ in range(6):
+                sparks.append([fxp, fh, 0.0, random.uniform(-9, 9), random.uniform(-2, 2), 0, 0.6, (200, 200, 220)])
+        if kind in ("land", "clash", "hit") and s >= 1: rings.append([fxp, fh, 0.0, s, kind == "land"])
+        if kind == "clash" or s >= 2.4: lines_t = f
+        v = e["victim"]
+        if v is not None:
+            b = bodies[v]; z = e["zone"]
+            if kind == "land": b.v[[0, 1, 2]] += np.array([3, 6, 12])*s*0.5; b.v[3:7] += np.random.uniform(-12, 12, 4)*s
+            elif z in ("head", "neck"):   # la tête part d'abord, le corps suit
+                b.v[[0, 1, 2]] += np.array([-5, -12, -26])*s; b.v[3:7] += np.random.uniform(-18, 18, 4)*s; hitflash[v] = 1
+            elif z in ("chest", "belly"):   # plié en deux
+                b.v[[0, 1, 2]] += np.array([9, 12, 10])*s; b.v[3:7] += np.random.uniform(-8, 8, 4)*s; hitflash[v] = 1
+            elif z == "legs":
+                b.v[[7, 8, 9, 10]] += np.array([-12, 20, -12, 20])*s; hitflash[v] = 1
+            elif z == "block":
+                b.v[[3, 4, 5, 6]] += np.array([-10, 14, -10, 14])*s; b.v[1] -= 4*s
+    hitflash *= 0.6
+
+    sk = [rig(i, st[i], ta, dta) for i in range(2)]
+    prevsk = [sk[0].copy(), sk[1].copy()]
+    xs_ = [st[0]["x"], st[1]["x"]]
+
+    # poussière quand ça glisse
+    for i in range(2):
+        if st[i]["h"] < 2 and dta > 0:
+            vx = (T[i].state(ta)["x"] - T[i].state(ta - dta)["x"])
+            if abs(vx) > 5 and st[i]["plant"]:
+                sparks.append([xs_[i], 0, random.uniform(-15, 15), -vx*0.3 + random.uniform(-2, 2), random.uniform(1, 4), random.uniform(-1, 1), 0.8, (140, 110, 80)])
+
+    # ---------- caméra ----------
+    sid, sh = shot_at(t)
+    cut = sid != cur_shot; cur_shot = sid
+    if cut: trails = [[], []]
+    if sid == "orb":
+        Tg = np.array([-80, st[0]["h"] - 40, 0.0]); zt = 1.25
+    elif sh is not None and sh.get("follow") == "A":
+        Tg = np.array([xs_[0], st[0]["h"] + 45, 0.0]); zt = zoom
+    else:
+        lim = xs_[0] + (60 if t < 2.6 else 520); xx2 = [xs_[0], min(xs_[1], lim) if xs_[1] > xs_[0] else max(xs_[1], xs_[0] - 520)]
+        Tg = np.array([sum(xx2)/2, max(st[0]["h"], st[1]["h"])*0.55 + 60, 0.0])
+        zt = float(np.clip(300/(abs(xx2[1] - xx2[0]) + 230), 0.42, 1.35))
+    if cut and sh is not None: camT = Tg.copy()
+    camT += (Tg - camT)*(0.35 if (sid == "orb" or sh is not None) else 0.25)
+    zoom += (zt - zoom)*(1 if cut else 0.2)
+    if sh is None: yaw, pitch, dist = 0.0, 3.0, 1500.0; fpx = 1.9*zoom*dist
+    else:
+        t0 = SHOT3[sid][0]; yaw = sh["yaw"] + sh["orbit"]*(t - t0); pitch, dist, fpx = sh["pitch"], sh["dist"], 520.0
+    C, fw, rt, up = look(camT, yaw, pitch, dist)
+    shake *= 0.82; flash *= 0.78
+    ox, oy = random.uniform(-shake, shake), random.uniform(-shake, shake)
+    CY = H*0.55
+    def proj(p):
+        v = np.asarray(p, float) - C; z = v @ fw
+        if z < 4.9: return None
+        return (W/2 + fpx*(v @ rt)/z + ox, CY - fpx*(v @ up)/z + oy, z)
+    def seg(p, q):
+        a, b = np.asarray(p, float), np.asarray(q, float); za, zb = (a - C) @ fw, (b - C) @ fw
+        if za < 5 and zb < 5: return None
+        if za < 5: a = a + (b - a)*(5 - za)/(zb - za)
+        if zb < 5: b = b + (a - b)*(5 - zb)/(za - zb)
+        return proj(a), proj(b)
+
+    # ---------- ciel jour/nuit ----------
+    ph, el, top, hor, L = sky_state(t)
+    hd = np.array([fw[0], 0, fw[2]]); hd /= (np.linalg.norm(hd) + 1e-9)
+    hy = CY - fpx*(hd @ up)/max(1e-3, hd @ fw) + oy
+    rows = (np.arange(H) - hy)[:, None]
+    k_ = np.clip(-rows/700, 0, 1); g_ = np.clip(rows/500, 0, 1)
+    skyc = np.array(hor)[None, :]*(1 - k_) + np.array(top)[None, :]*k_
+    gb = np.array([110, 84, 62])*L + np.array(hor)*0.12
+    grc = gb[None, :]*(1 - 0.55*g_)
+    sky_img = np.repeat(np.where(rows < 0, skyc, grc)[:, None, :], W, 1)
+    img = Image.fromarray(np.clip(sky_img, 0, 255).astype(np.uint8))
+    d = ImageDraw.Draw(img)
+    view_az = -math.radians(yaw)
+    def sky_pt(az, elv):
+        rel = az - view_az
+        if abs(rel) > 1.3: return None
+        return (W/2 + 300*math.tan(rel) + ox, hy - 300*math.tan(min(elv, 1.25))*0.62)
+    night = float(np.clip(-el/0.3, 0, 1))
+    if night > 0:
+        for az, elv, tw in STARS:
+            p = sky_pt(az, elv)
+            if p and p[1] < hy:
+                b = int(255*night*(0.5 + 0.5*math.sin(t*3 + tw)))
+                d.point(p, fill=(b, b, b))
+    skyg = Image.new("RGB", (W, H)); sgd = ImageDraw.Draw(skyg)
+    for (bph, rad, kind) in ((ph, 26, "sun"), (ph + math.pi, 17, "moon")):
+        sel = math.sin(bph); saz = -math.cos(bph)*1.05
+        if sel < -0.1: continue
+        p = sky_pt(saz, math.asin(max(-0.1, sel))*1.0)
+        if not p: continue
+        if kind == "sun":
+            c1 = mix((255, 120, 50), (255, 245, 210), float(np.clip(sel/0.4, 0, 1)))
+            sgd.ellipse([p[0]-rad*2.6, p[1]-rad*2.6, p[0]+rad*2.6, p[1]+rad*2.6], fill=tuple(int(v*0.55) for v in c1))
+        else:
+            c1 = (225, 230, 245); sgd.ellipse([p[0]-rad*2, p[1]-rad*2, p[0]+rad*2, p[1]+rad*2], fill=(40, 45, 60))
+        d.ellipse([p[0]-rad, p[1]-rad, p[0]+rad, p[1]+rad], fill=tuple(int(v) for v in c1))
+        if kind == "moon": d.ellipse([p[0]-rad+7, p[1]-rad-3, p[0]+rad+7, p[1]+rad-3], fill=tuple(int(v) for v in skyc[0]) if False else tuple(int(v) for v in mix(top, hor, 0.3)))
+    # nuages en accéléré
+    cm = Image.new("L", (W, H)); cd = ImageDraw.Draw(cm)
+    for cl in CLOUDS:
+        cl[0] += 0.55/FPS
+        if cl[0] > 1.6: cl[0] -= 3.2
+        p = sky_pt(cl[0], cl[1])
+        if p and p[1] < hy:
+            s_ = cl[2]
+            for dx_, dy_, r_ in ((0, 0, 1), (-0.8, 0.2, 0.7), (0.8, 0.25, 0.75)):
+                cd.ellipse([p[0] + dx_*s_ - r_*s_, p[1] + dy_*s_ - r_*s_*0.5, p[0] + dx_*s_ + r_*s_, p[1] + dy_*s_ + r_*s_*0.5], fill=150)
+    cm = cm.filter(ImageFilter.GaussianBlur(14))
+    img = Image.fromarray(np.clip(np.asarray(img, np.float32) + np.asarray(skyg.filter(ImageFilter.GaussianBlur(16)), np.float32), 0, 255).astype(np.uint8))
+    ccol = mix(mix(hor, (255, 255, 255), 0.5), (40, 42, 60), night)
+    img = Image.composite(Image.new("RGB", (W, H), tuple(int(v) for v in ccol)), img, cm)
+    d = ImageDraw.Draw(img)
+
+    glow = Image.new("RGB", (W, H)); gd = ImageDraw.Draw(glow)
+    gcol = tuple(int(v*0.75) for v in gb)
+    gx0 = int(camT[0]//90)*90
+    for gx in range(gx0 - 900, gx0 + 901, 90):
+        s_ = seg((gx, 0, -700), (gx, 0, 700))
+        if s_: d.line([s_[0][:2], s_[1][:2]], fill=gcol, width=1)
+    for gz in range(-700, 701, 90):
+        s_ = seg((gx0 - 900, 0, gz), (gx0 + 900, 0, gz))
+        if s_: d.line([s_[0][:2], s_[1][:2]], fill=gcol, width=1)
+    rcol = tuple(int(v) for v in mix(hor, (8, 6, 12), 0.72))
+    rs = []
+    for rx, rz, rw, rh in ruins:
+        pb = proj((rx, 0, rz))
+        if pb and pb[2] > dist + 500 and -200 < pb[0] < W + 200: rs.append((pb, rw, rh))
+    for pb, rw, rh in sorted(rs, key=lambda r: -r[0][2]):
+        s2 = fpx/pb[2]; d.rectangle([pb[0] - rw*s2/2, pb[1] - rh*s2, pb[0] + rw*s2/2, pb[1]], fill=rcol)
+
+    if t < 1.7:
+        pp = proj((-80, st[0]["h"] + 40, 0))
+        if pp:
+            px, py = pp[:2]
+            for r_, c_ in ((60, (90, 140, 160)), (30, (200, 240, 255))): gd.ellipse([px-r_, py-r_, px+r_, py+r_], fill=c_)
+            gd.line([px, py, px, py - 400], fill=(120, 200, 230), width=18); d.ellipse([px-14, py-14, px+14, py+14], fill=(255, 255, 255))
+
+    # ombres (direction selon le soleil)
+    sel = math.sin(ph); sh_off = float(np.clip(math.cos(ph)/max(0.3, sel), -2.5, 2.5))*22 if sel > 0 else 0
+    for i in range(2):
+        if t < 1.7 and i == 0: continue
+        rr = 38/(1 + st[i]["h"]/150)
+        poly = [proj((xs_[i] + sh_off + rr*(1 + abs(sh_off)/60)*math.cos(an), 0, rr*0.6*math.sin(an))) for an in np.linspace(0, 2*math.pi, 20)]
+        if all(poly): d.polygon([p[:2] for p in poly], fill=tuple(int(v*0.35) for v in gb))
+
+    gmul = 1.0 - 0.45*float(np.clip(el/0.4, 0, 1))
+    order = sorted(range(2), key=lambda i: -(((np.array([xs_[i], 60, 0]) - C) @ fw)))
+    for i in order:
+        if t < 1.7 and i == 0: continue
+        pz = -6 if i == 0 else 6
+        F = st[i]["F"]
+        scr = [proj((sk[i][n][0], sk[i][n][1], pz + ZOFF[n]*F)) for n in range(12)]
+        if any(p is None for p in scr): continue
+        trails[i] = (trails[i] + [scr])[-5:]
+        base = COL[i]; hc = tuple(int(c_ + (255 - c_)*hitflash[i]) for c_ in base)
+        for j, tr in enumerate(trails[i][:-1]):
+            a_ = (j + 1)/len(trails[i])*0.4*gmul
+            for b0, b1 in BONES:
+                gd.line([tr[b0][:2], tr[b1][:2]], fill=tuple(int(v*a_) for v in base), width=max(2, int(4.5*fpx/tr[b0][2])))
+        for dr, mul, c_ in ((gd, 2, tuple(int(v*gmul) for v in hc)), (d, 1, tuple(min(255, v + 60) for v in hc))):
+            for b0, b1 in BONES:
+                w_ = max(2, int(4.5*mul*fpx/((scr[b0][2] + scr[b1][2])/2)))
+                dr.line([scr[b0][:2], scr[b1][:2]], fill=c_, width=w_)
+                for p in (scr[b0], scr[b1]):
+                    r_ = w_/2; dr.ellipse([p[0]-r_, p[1]-r_, p[0]+r_, p[1]+r_], fill=c_)
+            hx, hy2, hz = scr[3]; r_ = 11*fpx/hz
+            dr.ellipse([hx-r_, hy2-r_, hx+r_, hy2+r_], fill=c_)
+
+    for s in sparks:
+        s[0] += s[3]; s[1] += s[4]; s[2] += s[5]; s[4] -= 0.7; s[6] -= 0.045
+        if s[1] < 0: s[1] = 0; s[4] *= -0.3; s[3] *= 0.7
+        if s[6] > 0:
+            q = seg((s[0], s[1], s[2]), (s[0] - s[3]*1.5, s[1] - s[4]*1.5, s[2] - s[5]*1.5))
+            if q:
+                c_ = tuple(int(v*s[6]) for v in s[7])
+                gd.line([q[0][:2], q[1][:2]], fill=c_, width=5); d.line([q[0][:2], q[1][:2]], fill=c_, width=2)
+    sparks = [s for s in sparks if s[6] > 0]
+    for r in rings:
+        r[2] += 1; a_ = max(0, 1 - r[2]/14); rad = r[2]*(14 + r[3]*6)
+        col = tuple(int(255*a_) for _ in range(3)); wd = max(1, int(6*a_))
+        if r[4]:
+            poly = [proj((r[0] + rad*math.cos(u), 1, rad*math.sin(u))) for u in np.linspace(0, 2*math.pi, 28)]
+            if all(poly): gd.line([p[:2] for p in poly], fill=col, width=wd)
+        else:
+            pc = proj((r[0], r[1], 0))
+            if pc: rp = rad*fpx/pc[2]; gd.ellipse([pc[0]-rp, pc[1]-rp, pc[0]+rp, pc[1]+rp], outline=col, width=wd)
+    rings = [r for r in rings if r[2] < 14]
+    if f - lines_t < 8:
+        a_ = 1 - (f - lines_t)/8
+        for _ in range(40):
+            an = random.uniform(0, 2*math.pi); r0 = random.uniform(180, 300)
+            gd.line([W/2 + math.cos(an)*r0, H/2 + math.sin(an)*r0, W/2 + math.cos(an)*900, H/2 + math.sin(an)*900],
+                    fill=tuple(int(200*a_) for _ in range(3)), width=2)
+    for s in ash:
+        s[0] = (s[0] - 1.5*s[2]) % W; s[1] = (s[1] + 0.6*s[2]) % H
+        d.point((s[0], s[1]), fill=tuple(int(v) for v in mix((170, 150, 130), (90, 90, 110), night)))
+
+    # « JOUR N » à chaque lever du soleil
+    for k in range(3):
+        tt = t - (SUNRISE0 + k*DAY)
+        if 0.1 < tt < 1.7:
+            al = min(1, (tt - 0.1)/0.3, (1.7 - tt)/0.4)
+            d.text((W/2, 130), f"JOUR {k+1}", font=FONT, anchor="mm", fill=tuple(int(v*al + mix(top, hor, 0.2)[n]*(1-al)) for n, v in enumerate((255, 240, 210))))
+
+    arr = np.asarray(img, np.float32) + np.asarray(glow.filter(ImageFilter.GaussianBlur(10)), np.float32)*0.9 \
+          + np.asarray(glow, np.float32)*0.25
+    arr = arr*vign + flash*150
+    if f - lines_t == 0: arr = 255 - np.clip(arr, 0, 255)
+    if sh is not None: arr[:70] = 0; arr[-70:] = 0
+    ff.stdin.write(np.clip(arr, 0, 255).astype(np.uint8).tobytes())
+
+ff.stdin.close(); ff.wait()
+print("groupes", len(groups), "plans3D", len(SHOT3))
