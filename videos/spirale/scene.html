@@ -1,0 +1,254 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Spirale</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const params = new URLSearchParams(location.search);
+const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
+const TL = await (await fetch('timeline.json')).json();
+const HITS = TL.hits, N = HITS.length;
+
+// ---------- geometrie de la spirale ----------
+const R = 4.0;          // rayon de la trajectoire de la bille
+const DA = 0.36;        // pas angulaire entre deux paves (rad)
+const DY = 0.42;        // descente par pave
+const A0 = 0.0;
+const BR = 0.28;        // rayon de la bille
+const EXTRA = 10;       // paves supplementaires (escalier qui continue)
+const ang = i => A0 - i * DA;
+const topY = i => -i * DY;
+const onSpiral = (a, y, r = R) => new THREE.Vector3(r * Math.cos(a), y, r * Math.sin(a));
+
+// ---------- renderer ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xb9b4d4, 12, 42);
+const camera = new THREE.PerspectiveCamera(52, W / H, 0.1, 200);
+
+// ciel degrade crepuscule : chaud d'un cote, froid de l'autre
+const sky = new THREE.Mesh(new THREE.SphereGeometry(100, 48, 24), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `varying vec3 vP; void main(){
+    float warm = smoothstep(-0.6, 1.0, dot(normalize(vP.xz+1e-4), normalize(vec2(1.,-.4))));
+    vec3 cool = vec3(.55,.60,.78), hot = vec3(.98,.76,.68);
+    vec3 c = mix(cool, hot, warm*0.85);
+    c = mix(c, vec3(.88,.87,.95), smoothstep(0.1, 0.9, vP.y));
+    c = mix(c, vec3(.42,.42,.58), smoothstep(-0.1, -0.9, vP.y));
+    gl_FragColor = vec4(c,1.); }`
+}));
+scene.add(sky);
+
+// lumieres
+scene.add(new THREE.HemisphereLight(0xd6d6ff, 0x5a5070, 0.9));
+const sun = new THREE.DirectionalLight(0xffc4a2, 2.2);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 9, bottom: -9, near: 0.5, far: 40 });
+sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
+scene.add(sun, sun.target);
+const SUN_OFF = new THREE.Vector3(10, 14, -6);
+
+// colonne centrale claire (recoit les ombres de l'escalier)
+const column = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 80, 64),
+  new THREE.MeshStandardMaterial({ color: 0xe9e6f2, roughness: 0.9 }));
+column.position.y = -15; column.receiveShadow = true; scene.add(column);
+
+// ---------- textures 7 segments ----------
+const SEG = { 0:'abcdef',1:'bc',2:'abged',3:'abgcd',4:'fgbc',5:'afgcd',6:'afgedc',7:'abc',8:'abcdefg',9:'abcfgd' };
+function segPaths(ctx, s, x0, y0, w, h, t) {
+  const m = { a:[x0+t,y0,w-2*t,t], d:[x0+t,y0+h-t,w-2*t,t], g:[x0+t,y0+h/2-t/2,w-2*t,t],
+    f:[x0,y0+t,t,h/2-t*1.5], b:[x0+w-t,y0+t,t,h/2-t*1.5], e:[x0,y0+h/2+t/2,t,h/2-t*1.5], c:[x0+w-t,y0+h/2+t/2,t,h/2-t*1.5] };
+  for (const k of s) { const [x,y,ww,hh] = m[k]; ctx.beginPath(); ctx.roundRect(x,y,ww,hh,t*0.45); ctx.fill(); }
+}
+function digitTex(d, lit) {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  if (lit) {
+    g.strokeStyle = '#ffd21a'; g.lineWidth = 16; g.strokeRect(8, 8, 240, 240);
+    g.fillStyle = '#ffd21a'; segPaths(g, SEG[d], 70, 42, 116, 172, 22);
+  } else {
+    g.fillStyle = '#151518'; g.fillRect(0, 0, 256, 256);
+    g.fillStyle = '#26262c'; segPaths(g, SEG[8], 70, 42, 116, 172, 22);   // segments eteints
+    g.fillStyle = '#34343c'; segPaths(g, SEG[d], 70, 42, 116, 172, 22);
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+const texOff = [], texOn = [];
+for (let d = 0; d < 10; d++) { texOff.push(digitTex(d, false)); texOn.push(digitTex(d, true)); }
+
+// ---------- paves ----------
+const BL = 2.5, BH = 0.85, BW = 0.9;
+const boxGeo = new THREE.BoxGeometry(BL, BH, BW);
+const boxMat = new THREE.MeshStandardMaterial({ color: 0x18181c, roughness: 0.55, metalness: 0.2 });
+const screwGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.03, 16);
+const screwMat = new THREE.MeshStandardMaterial({ color: 0xb8b8c0, metalness: 1, roughness: 0.3 });
+const wireMat = new THREE.MeshStandardMaterial({ color: 0x55555e, metalness: 0.8, roughness: 0.4 });
+const faceGeo = new THREE.PlaneGeometry(BW * 0.96, BH * 0.96);
+const blocks = [];
+for (let i = 0; i < N + EXTRA; i++) {
+  const grp = new THREE.Group();
+  const a = ang(i);
+  grp.position.copy(onSpiral(a, topY(i) - BH / 2, R + 0.35));
+  grp.rotation.y = -a;
+  const box = new THREE.Mesh(boxGeo, boxMat); box.castShadow = box.receiveShadow = true; grp.add(box);
+  for (const sx of [-0.85, 0.75]) { const s = new THREE.Mesh(screwGeo, screwMat); s.position.set(sx, BH/2 + 0.01, 0); grp.add(s); }
+  const d = (i + 1) % 10;
+  const off = new THREE.Mesh(faceGeo, new THREE.MeshBasicMaterial({ map: texOff[d] }));
+  off.position.x = BL / 2 + 0.002; off.rotation.y = Math.PI / 2; grp.add(off);
+  const onMat = new THREE.MeshBasicMaterial({ map: texOn[d], transparent: true, opacity: 0, toneMapped: false,
+    blending: THREE.AdditiveBlending, depthWrite: false });
+  const on = new THREE.Mesh(faceGeo, onMat); on.position.x = BL / 2 + 0.004; on.rotation.y = Math.PI / 2; grp.add(on);
+  // fil de suspension depuis l'extremite exterieure
+  if (i % 3 === 0) {
+    const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 6), wireMat);
+    wire.position.set(BL / 2 - 0.15, BH / 2 + 15, 0); grp.add(wire);
+  }
+  scene.add(grp);
+  blocks.push({ grp, onMat, baseY: grp.position.y, hit: i < N ? HITS[i].t : Infinity });
+}
+
+// ---------- rails d'entree / sortie (deux fils paralleles) ----------
+const railMat = new THREE.MeshStandardMaterial({ color: 0x9a9aa6, metalness: 0.9, roughness: 0.25 });
+function railPath(ks, ky, kd) { // ks: indices fractionnaires de pave, ky: hauteur
+  return ks.map((k, j) => onSpiral(ang(k), ky[j], R + kd));
+}
+function makeRail(pts) {
+  for (const dr of [-0.17, 0.17]) {
+    const p = pts.map(v => { const r = Math.hypot(v.x, v.z), a = Math.atan2(v.z, v.x); return onSpiral(a, v.y, r + dr); });
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(p), 200, 0.025, 8), railMat);
+    tube.castShadow = true; scene.add(tube);
+  }
+  // traverses
+  const curve = new THREE.CatmullRomCurve3(pts);
+  for (let u = 0.04, j = 0; u < 1; u += 0.08, j++) {
+    const v = curve.getPoint(u); const a = Math.atan2(v.z, v.x);
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.4, 6), railMat);
+    t.position.set(v.x, v.y - 0.06, v.z); t.rotation.z = Math.PI / 2; t.rotation.y = -a; scene.add(t);
+    if (j % 3 === 1) { const hang = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 30, 4), wireMat);
+    hang.position.set(v.x, v.y + 15, v.z); scene.add(hang); }
+  }
+  return curve;
+}
+// rail d'entree : vient du haut, s'arrete juste avant le premier pave
+const inKs = [9, 7, 5, 3.5, 2.2, 1.3];
+const inCurve = makeRail(railPath(inKs, inKs.map(k => 1.6 + (k - 1.3) * 0.32), 0));
+// rail de sortie : apres la derniere note, la bille repart
+const lastI = N - 1;
+const outKs = [lastI + 1.6, lastI + 2.6, lastI + 4, lastI + 6, lastI + 9];
+const outY0 = topY(lastI) - 0.9;
+const outCurve = makeRail(railPath(outKs, outKs.map((k, j) => outY0 - j * 0.35), 0));
+const RAIL_LIFT = 0.07 + BR;
+
+// ---------- bille ----------
+function planetTex() {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 256; const g = c.getContext('2d');
+  g.fillStyle = '#3fd9c8'; g.fillRect(0, 0, 512, 256);
+  let s = 3; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  for (let k = 0; k < 70; k++) {
+    g.fillStyle = rnd() > 0.5 ? 'rgba(120,255,200,0.55)' : 'rgba(30,140,170,0.5)';
+    g.beginPath(); g.ellipse(rnd()*512, rnd()*256, 10+rnd()*45, 6+rnd()*22, rnd()*3, 0, 7); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const pt = planetTex();
+const ball = new THREE.Mesh(new THREE.SphereGeometry(BR, 48, 32),
+  new THREE.MeshStandardMaterial({ map: pt, emissiveMap: pt, emissive: 0xffffff, emissiveIntensity: 1.25, roughness: 0.25 }));
+ball.castShadow = true; scene.add(ball);
+const halo = new THREE.Mesh(new THREE.SphereGeometry(BR * 1.25, 32, 16),
+  new THREE.MeshBasicMaterial({ color: 0x7ffff0, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false }));
+ball.add(halo);
+const ballLight = new THREE.PointLight(0x5cffd8, 6, 5, 1.6); ball.add(ballLight);
+
+// ---------- trajectoire (analytique, deterministe) ----------
+const hitPos = i => onSpiral(ang(i), topY(i) + BR, R);
+const ease = x => x * x * (3 - 2 * x);
+function ballPos(t) {
+  const t0 = HITS[0].t;
+  const tRailEnd = t0 - 0.38;
+  if (t < tRailEnd) {                                   // roule sur le rail d'entree
+    const u = Math.max(0, t) / tRailEnd;
+    const p = inCurve.getPointAt(Math.min(1, 0.05 + 0.95 * (u * 0.55 + 0.45 * u * u)));
+    return p.add(new THREE.Vector3(0, RAIL_LIFT, 0));
+  }
+  if (t < t0) {                                         // petit saut vers le premier pave
+    const a = inCurve.getPointAt(1).add(new THREE.Vector3(0, RAIL_LIFT, 0)), b = hitPos(0);
+    const s = (t - tRailEnd) / (t0 - tRailEnd);
+    const p = a.clone().lerp(b, s); p.y += 0.45 * 4 * s * (1 - s); return p;
+  }
+  for (let i = 0; i < N; i++) {
+    const h = HITS[i], tEnd = h.t + h.dur;
+    if (t < tEnd) {
+      const a = hitPos(i);
+      const b = i < N - 1 ? hitPos(i + 1) : outCurve.getPointAt(0).add(new THREE.Vector3(0, RAIL_LIFT, 0));
+      const s = (t - h.t) / h.dur;
+      const height = 0.35 + 0.55 * (h.dur / 0.32) ** 0.8;
+      const p = a.clone().lerp(b, s); p.y += height * 4 * s * (1 - s); return p;
+    }
+  }
+  const tl = HITS[N - 1].t + HITS[N - 1].dur;             // repart sur le rail de sortie
+  const u = Math.min(1, (t - tl) / (TL.end - tl + 0.4));
+  return outCurve.getPointAt(Math.min(1, u * (0.6 + 0.4 * u))).add(new THREE.Vector3(0, RAIL_LIFT, 0));
+}
+function smoothBall(t, win = 0.45, n = 13) {
+  const v = new THREE.Vector3();
+  for (let k = 0; k < n; k++) v.add(ballPos(t + (k / (n - 1) - 0.5) * 2 * win));
+  return v.divideScalar(n);
+}
+
+// ---------- post-traitement ----------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.75, 0.55, 0.82));
+composer.addPass(new OutputPass());
+
+// ---------- rendu d'une image a l'instant t ----------
+function renderAt(t) {
+  const p = ballPos(t);
+  ball.position.copy(p);
+  ball.rotation.set(t * 2.1, -t * 3.3, 0);
+  halo.material.opacity = 0.10 + 0.04 * Math.sin(t * 9);
+
+  // paves : allumage + petite secousse a l'impact
+  for (const b of blocks) {
+    const dt = t - b.hit;
+    let glow = 0, dip = 0;
+    if (dt >= 0) {
+      glow = Math.max(Math.exp(-dt / 0.55), 0);
+      dip = -0.07 * Math.exp(-dt / 0.09) * Math.cos(dt * 40);
+    }
+    b.onMat.opacity = Math.min(1, glow * 1.4);
+    b.onMat.color.setScalar(1 + 2.2 * glow);
+    b.grp.position.y = b.baseY + dip;
+  }
+
+  // camera : suit la bille, tourne autour de la spirale
+  const sb = smoothBall(t), look = smoothBall(t + 0.25, 0.35, 9);
+  const a = Math.atan2(sb.z, sb.x);
+  const intro = 1 - ease(Math.min(1, t / 1.6));
+  const phi = a + 0.6 + 0.2 * Math.sin(t * 0.35) + 0.4 * intro;
+  const rc = 14.0 + 1.0 * Math.sin(t * 0.42 + 0.6) + 2.5 * intro;
+  const hc = 7.8 + 1.2 * Math.sin(t * 0.31 + 1.2) + 2.0 * intro;
+  camera.position.set(rc * Math.cos(phi), sb.y + hc, rc * Math.sin(phi));
+  camera.lookAt(look.x * 0.8, look.y - 1.6, look.z * 0.8);
+
+  sun.position.copy(p).add(SUN_OFF); sun.target.position.copy(p);
+  sky.position.copy(camera.position);
+  composer.render();
+}
+window.renderAt = t => { renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.93); };
+window.END = TL.end;
+window.READY = true;
+if (!params.has('capture')) { const st = performance.now(); (function loop(){ renderAt(((performance.now()-st)/1000) % TL.end); requestAnimationFrame(loop); })(); }
+</script></body></html>
