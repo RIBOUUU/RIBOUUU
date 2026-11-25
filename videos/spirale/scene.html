@@ -255,6 +255,56 @@ composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.75, 0.55, 0.82))
 composer.addPass(new OutputPass());
 
 const ease = x => x * x * (3 - 2 * x);
+// ---------- camera : un plan different tous les 10 notes (coupe franche) ----------
+const UP = new THREE.Vector3(0, 1, 0);
+const SHOTS = ['suivi', 'plongee', 'contre-plongee', 'poursuite', 'balayage', 'penche'];
+function updateCamera(t) {
+  const iSeg = t < HITS[0].t ? 0 : hopIndex(Math.min(t, HITS[N - 1].t));
+  const k = segOf(iSeg), shot = SHOTS[k % SHOTS.length];
+  const tCut = HITS[Math.min(k * SEG, N - 1)].t, u = Math.max(0, t - tCut);   // temps depuis la coupe
+  const sb = smoothBall(t), look = smoothBall(t + 0.25, 0.35, 9);
+  const a = Math.atan2(sb.z, sb.x);
+  const rad = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));          // vers l'exterieur
+  const fwd = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a));         // sens de la bille
+  const at = (base, r, f, y) => base.clone().addScaledVector(rad, r).addScaledVector(fwd, f).addScaledVector(UP, y);
+  camera.up.set(0, 1, 0);
+  let pos, target, roll = 0, fov = 52;
+  if (shot === 'suivi') {
+    const intro = 1 - ease(Math.min(1, Math.max(0, t) / 1.2));
+    const phi = a + 0.6 + 0.2 * Math.sin(t * 0.35) + 0.4 * intro;
+    const rc = 15.5 + Math.sin(t * 0.42 + 0.6) + 2.5 * intro, hc = 7.8 + 1.2 * Math.sin(t * 0.31 + 1.2) + 2 * intro;
+    pos = new THREE.Vector3(rc * Math.cos(phi), sb.y + hc, rc * Math.sin(phi));
+    target = new THREE.Vector3(look.x * 0.8, look.y - 1.6, look.z * 0.8);
+  } else if (shot === 'plongee') {                    // vue du dessus qui tourne sur elle-meme
+    pos = at(sb, 2.5, -1.5, 12 - u * 0.8);
+    target = at(look, 0, 0.5, 0);
+    roll = u * 0.9;
+  } else if (shot === 'contre-plongee') {             // plan rasant a hauteur de bille, legerement par en dessous
+    pos = at(sb, 6.5 - u * 0.3, 3.5, -0.15);
+    target = at(look, 0, -0.5, 0.9);
+    roll = -0.2; fov = 58;
+  } else if (shot === 'poursuite') {                  // camera embarquee juste derriere la bille
+    const sc = smoothBall(t, 0.15, 7), lk = smoothBall(t + 0.3, 0.15, 7);
+    pos = at(sc, 0.9, -2.8, 1.5);
+    target = at(lk, 0, 1.5, -0.4);
+    fov = 62; roll = 0.12 * Math.sin(u * 3);
+  } else if (shot === 'balayage') {                   // arc rapide autour de la bille
+    const th = 1.35 * Math.sin(u * 1.7);
+    pos = at(sb, 7.5 * Math.cos(th), 7.5 * Math.sin(th), 2.2 + 1.5 * Math.sin(u * 1.1));
+    target = at(look, 0, 0, -0.3);
+  } else {                                            // plan penche, face aux chiffres
+    pos = at(sb, 8.5, -1.5 + u * 1.2, 0.9);
+    target = at(look, 0, 0, -0.5);
+    roll = 0.42 * (k % 2 ? 1 : -1);
+    fov = 48;
+  }
+  fov -= 8 * Math.exp(-u / 0.18);                     // petit "punch" de zoom a chaque coupe
+  if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  camera.position.copy(pos);
+  camera.lookAt(target);
+  if (roll) camera.rotateZ(roll);
+}
+
 function renderAt(t) {
   const p = ballPos(t);
   ballPivot.position.copy(p);
@@ -283,15 +333,7 @@ function renderAt(t) {
     b.grp.position.y = b.baseY + dip;
   }
 
-  const sb = smoothBall(t), look = smoothBall(t + 0.25, 0.35, 9);
-  const a = Math.atan2(sb.z, sb.x);
-  const intro = 1 - ease(Math.min(1, Math.max(0, t) / 1.2));
-  const phi = a + 0.6 + 0.2 * Math.sin(t * 0.35) + 0.4 * intro;
-  const rc = 15.5 + 1.0 * Math.sin(t * 0.42 + 0.6) + 2.5 * intro;
-  const hc = 7.8 + 1.2 * Math.sin(t * 0.31 + 1.2) + 2.0 * intro;
-  camera.position.set(rc * Math.cos(phi), sb.y + hc, rc * Math.sin(phi));
-  camera.lookAt(look.x * 0.8, look.y - 1.6, look.z * 0.8);
-
+  updateCamera(t);
   sun.position.copy(p).add(SUN_OFF); sun.target.position.copy(p);
   sky.position.copy(camera.position);
   composer.render();
