@@ -19,7 +19,7 @@ THEME = [
 ]
 # Structure de Grieg : le theme revient, change de ton, et accelere jusqu'au final.
 # (transposition en demi-tons, duree d'une croche en secondes)
-SECTIONS = [(0, 0.32), (0, 0.30), (-5, 0.28), (-5, 0.26), (0, 0.23), (0, 0.20), (0, 0.17)]
+SECTIONS = [(0, 0.28), (0, 0.21)]   # version courte ~20 s (version longue : (0,.32),(0,.30),(-5,.28),(-5,.26),(0,.23),(0,.20),(0,.17))
 FINALE = [("B5",1,0.17),("F#5",1,0.17),("D5",1,0.17),("B4",1,0.17),("F#4",2,0.20),("B4",5,0.30)]
 
 def midi_of(n):
