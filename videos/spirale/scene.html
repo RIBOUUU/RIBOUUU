@@ -69,6 +69,41 @@ for (let i = 0; i < N; i++) {
 }
 // land[N] = arrivee sur le rail de sortie
 
+// ---------- embranchements (suspense) ----------
+// A chaque fourche, le chemin se divise en 3 pistes ; la bille n'en prend qu'une,
+// les deux autres s'arretent dans le vide.
+const LANES = [ { dr: -1.5, dy: 0.0 }, { dr: 0.0, dy: -1.7 }, { dr: 1.5, dy: -3.4 } ];
+const FORK_LEN = 6;                                    // nb de notes pendant lesquelles les pistes coexistent
+const FORKS = [ { at: 6, choice: 2 }, { at: 22, choice: 0 }, { at: 38, choice: 1 } ].filter(f => f.at + FORK_LEN < N);
+const baseLand = land.map(l => ({ ...l }));
+const decoys = [];                                     // {i, p} blocs leurres
+{
+  let cumDy = 0;
+  const offDr = new Array(N + 1).fill(0), offDy = new Array(N + 1).fill(0);
+  let fk = 0;
+  for (let n = 0; n <= N; n++) {
+    const f = FORKS[fk];
+    if (f && n > f.at && n <= f.at + FORK_LEN) {
+      const ramp = Math.min(1, (n - f.at) / 2), L = LANES[f.choice];
+      offDr[n] = L.dr * ramp; offDy[n] = cumDy + L.dy * ramp;
+      LANES.forEach((Lj, j) => { if (j !== f.choice) decoys.push({ i: n, p: { a: baseLand[n].a, y: baseLand[n].y + cumDy + Lj.dy * ramp, r: baseLand[n].r + Lj.dr * ramp } }); });
+      if (n === f.at + FORK_LEN) { cumDy += L.dy; f.back = L.dr; fk++; }
+    } else {
+      const prev = FORKS[fk - 1];
+      const k = prev ? n - (prev.at + FORK_LEN) : 99;
+      offDr[n] = prev && k <= 3 ? prev.back * (1 - k / 3) : 0;
+      offDy[n] = cumDy;
+    }
+    land[n].r += offDr[n]; land[n].y += offDy[n];
+  }
+  // la physique reste exacte : on recalcule la vitesse verticale de chaque saut
+  for (let i = 0; i < N; i++) {
+    const h = hops[i], dy = land[i + 1].y - land[i].y;
+    h.vy = (dy + h.g * h.T * h.T / 2) / h.T;
+  }
+}
+const inFork = i => FORKS.find(f => i >= f.at - 1 && i <= f.at + 2);
+
 // ---------- renderer ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(W, H); renderer.setPixelRatio(1);
@@ -102,7 +137,7 @@ scene.add(sun, sun.target);
 const SUN_OFF = new THREE.Vector3(10, 14, -6);
 
 const yMin = Math.min(...land.map(l => l.y));
-const column = new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.3, -yMin + 80, 64),
+const column = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, -yMin + 80, 64),
   new THREE.MeshStandardMaterial({ color: 0xe9e6f2, roughness: 0.9 }));
 column.position.y = (40 + yMin - 40) / 2; column.receiveShadow = true; scene.add(column);
 
@@ -139,9 +174,8 @@ const styleMats = BLOCK_STYLES.map(s => new THREE.MeshStandardMaterial({
   color: s.color, roughness: s.rough, metalness: s.metal,
   transparent: !!s.glass, opacity: s.glass ? 0.55 : 1, emissive: s.glass ? 0x203850 : 0x000000 }));
 const blocks = [];
-for (let i = 0; i < N; i++) {
+function addBlock(i, p, hitT) {
   const st = blockStyle(i), mat = styleMats[BLOCK_STYLES.indexOf(st)];
-  const p = land[i];
   // largeur : limitee par l'ecart avec les voisins (les blocs se serrent quand ca accelere)
   const gap = Math.min(i > 0 ? land[i - 1].a - p.a : 9, p.a - land[i + 1].a);
   const rIn = p.r + st.off - st.L / 2;
@@ -175,13 +209,15 @@ for (let i = 0; i < N; i++) {
     blending: THREE.AdditiveBlending, depthWrite: false });
   const rim = new THREE.Mesh(new THREE.PlaneGeometry(st.shape === 'hex' ? faceW * 1.6 : st.L * 0.96, st.shape === 'hex' ? faceW * 1.6 : w * 0.9), rimMat);
   rim.rotation.x = -Math.PI / 2; rim.position.y = st.H / 2 + 0.004; grp.add(rim);
-  if (i % 3 === 0) {
+  if (i % 3 === 0 && isFinite(hitT)) {
     const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 6), wireMat);
     wire.position.set(faceX - 0.15, st.H / 2 + 15, 0); grp.add(wire);
   }
   scene.add(grp);
-  blocks.push({ grp, onMat, rimMat, baseY: grp.position.y, hit: HITS[i].t });
+  blocks.push({ grp, onMat, rimMat, baseY: grp.position.y, hit: hitT });
 }
+for (let i = 0; i < N; i++) addBlock(i, land[i], HITS[i].t);
+for (const d of decoys) addBlock(d.i, d.p, Infinity);
 
 // ---------- rail de sortie ----------
 const railMat = new THREE.MeshStandardMaterial({ color: 0x9a9aa6, metalness: 0.9, roughness: 0.25 });
@@ -269,7 +305,15 @@ function updateCamera(t) {
   const at = (base, r, f, y) => base.clone().addScaledVector(rad, r).addScaledVector(fwd, f).addScaledVector(UP, y);
   camera.up.set(0, 1, 0);
   let pos, target, roll = 0, fov = 52;
-  if (shot === 'suivi') {
+  const fk = t >= HITS[0].t ? inFork(hopIndex(t)) : null;
+  if (fk) {                                           // plan large de suspense : on voit les 3 pistes
+    const uf = t - HITS[fk.at - 1].t;
+    const ahead = smoothBall(t + 0.55, 0.3, 9);
+    const mid = sb.clone().lerp(ahead, 0.3);
+    pos = at(mid, 9.5 - uf * 0.6, 1.5, 7.5 - uf * 0.6);
+    target = at(mid, 0.3, 0, -1.6);
+    fov = 50 - 6 * Math.exp(-uf / 0.18);
+  } else if (shot === 'suivi') {
     const intro = 1 - ease(Math.min(1, Math.max(0, t) / 1.2));
     const phi = a + 0.6 + 0.2 * Math.sin(t * 0.35) + 0.4 * intro;
     const rc = 15.5 + Math.sin(t * 0.42 + 0.6) + 2.5 * intro, hc = 7.8 + 1.2 * Math.sin(t * 0.31 + 1.2) + 2 * intro;
@@ -298,7 +342,7 @@ function updateCamera(t) {
     roll = 0.42 * (k % 2 ? 1 : -1);
     fov = 48;
   }
-  fov -= 8 * Math.exp(-u / 0.18);                     // petit "punch" de zoom a chaque coupe
+  if (!fk) fov -= 8 * Math.exp(-u / 0.18);                     // petit "punch" de zoom a chaque coupe
   if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
   camera.position.copy(pos);
   camera.lookAt(target);
