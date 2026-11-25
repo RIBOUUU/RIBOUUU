@@ -28,7 +28,7 @@ P = {
  "lie":    [(-56,0),(-78,-2),(-40,-8),(-24,-2),(-46,8),(-30,6),(26,-4),(54,0),(26,4),(54,6)],
 }
 P = {k: np.array(v, float) for k, v in P.items()}
-BONES = [(-1,0),(0,2),(2,3),(0,4),(4,5),(-1,6),(6,7),(-1,8),(8,9)]  # -1 = hanche
+BONES = [(0,1),(1,2),(2,3),(2,4),(4,5),(2,6),(6,7),(0,8),(8,9),(0,10),(10,11)]
 
 # ---------- chorégraphie : (t, x, hauteur, rotation°, pose, easing) ----------
 A = [(0,-80,950,0,"tuck","lin"),(1.7,-80,0,0,"land","in"),(2.6,-80,0,0,"land","io"),(3.3,-80,0,0,"stance","io"),
@@ -64,15 +64,15 @@ def pose_of(name, t):
     return P[name]
 
 def sample(keys, t):
-    if t <= keys[0][0]: k = keys[0]; return k[1], k[2], k[3], pose_of(k[4], t)
+    if t <= keys[0][0]: k = keys[0]; return k[1], k[2], k[3], pose_of(k[4], t), k[4]
     for a, b in zip(keys, keys[1:]):
         if t <= b[0]:
             p = (t - a[0]) / max(1e-6, b[0] - a[0])
             e = EASE[b[5]](p)
             q = min(1, p / 0.35); q = q*q*(3-2*q)            # la pose arrive vite = coups secs
             pose = pose_of(a[4], t)*(1-q) + pose_of(b[4], t)*q
-            return a[1]+(b[1]-a[1])*e, a[2]+(b[2]-a[2])*e, a[3]+(b[3]-a[3])*e, pose
-    k = keys[-1]; return k[1], k[2], k[3], pose_of(k[4], t)
+            return a[1]+(b[1]-a[1])*e, a[2]+(b[2]-a[2])*e, a[3]+(b[3]-a[3])*e, pose, (b[4] if q > 0.5 else a[4])
+    k = keys[-1]; return k[1], k[2], k[3], pose_of(k[4], t), k[4]
 
 def skeleton(x, h, rot, pose, facing):
     pts = np.vstack([[0, 0], pose])
@@ -80,6 +80,55 @@ def skeleton(x, h, rot, pose, facing):
     pts = np.stack([pts[:,0]*c - pts[:,1]*s, pts[:,0]*s + pts[:,1]*c], 1)
     hip_h = h + pts[:,1].max()                     # le point le plus bas touche « h »
     return np.stack([x + facing*pts[:,0], hip_h - pts[:,1]], 1)   # coordonnées monde (y vers le haut)
+
+
+# ---------- squelette articulé (angles + ressorts) ----------
+# os : (point parent, point enfant, os parent) ; points : 0 hanche,1 buste,2 cou,3 tête,4-5 bras avant,6-7 bras arrière,8-9 jambe avant,10-11 jambe arrière
+BD = [(0,1,-1),(1,2,0),(2,3,1),(2,4,1),(4,5,3),(2,6,1),(6,7,5),(0,8,-1),(8,9,7),(0,10,-1),(10,11,9)]
+#           buste cou  tête brasA avbA brasB avbB cuisA tibA cuisB tibB
+OMEGA = np.array([34, 24, 15, 30, 22, 30, 22, 32, 26, 32, 26], float)   # raideur (plus bas = plus souple)
+ZETA = 0.5                                                                 # amortissement (<1 = rebond)
+def pts12(pose):
+    p = np.vstack([[0, 0], pose]); hip, neck = p[0], p[1]
+    chest = (hip + neck)/2
+    return np.array([hip, chest, neck, p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10]])
+def rel_angles(pose):
+    q = pts12(pose); ab = []; out = []
+    for i, (a, b, par) in enumerate(BD):
+        ang = math.atan2(q[b][1]-q[a][1], q[b][0]-q[a][0]); ab.append(ang)
+        r = ang - (ab[par] if par >= 0 else 0)
+        out.append((r + math.pi) % (2*math.pi) - math.pi)
+    return np.array(out)
+_q = pts12(P["stance"]); LEN = np.array([np.hypot(*(_q[b]-_q[a])) for a, b, _ in BD])
+def fk(rel):
+    q = np.zeros((12, 2)); ab = np.zeros(11)
+    for i, (a, b, par) in enumerate(BD):
+        ab[i] = rel[i] + (ab[par] if par >= 0 else 0)
+        q[b] = q[a] + LEN[i]*np.array([math.cos(ab[i]), math.sin(ab[i])])
+    return q
+class Body:
+    def __init__(self, pose): self.a = rel_angles(pose); self.v = np.zeros(11)
+    def step(self, target, dt):
+        for _ in range(4):
+            d = (target - self.a + math.pi) % (2*math.pi) - math.pi
+            self.v += (OMEGA**2*d - 2*ZETA*OMEGA*self.v)*dt/4
+            self.a += self.v*dt/4
+def skeleton2(x, h, rot, rel, facing):
+    pts = fk(rel)
+    r = math.radians(rot); c, s = math.cos(r), math.sin(r)
+    pts = np.stack([pts[:,0]*c - pts[:,1]*s, pts[:,0]*s + pts[:,1]*c], 1)
+    hip_h = h + pts[:,1].max()
+    return np.stack([x + facing*pts[:,0], hip_h - pts[:,1]], 1)
+SOFT = {"stance", "block", "duck"}
+BEAT = 0.4587
+def target_angles(pose, name, t, ph):
+    tg = rel_angles(pose)
+    if name in SOFT:   # respiration, balancement et rebond des genoux sur le tempo
+        bob = (math.sin(2*math.pi*(t - 4.08)/BEAT) + 1)/2
+        tg[0] += 0.05*math.sin(t*3.1 + ph); tg[1] += 0.07*math.sin(t*2.3 + ph)
+        tg[3] += 0.12*math.sin(t*4.0 + ph); tg[5] += 0.12*math.sin(t*3.6 + ph + 1)
+        tg[7] -= 0.22*bob; tg[8] += 0.38*bob; tg[9] -= 0.18*bob; tg[10] += 0.3*bob
+    return tg
 
 # ---------- décor ----------
 ruins = [(random.uniform(-1500, 1500), random.uniform(20, 70), random.uniform(30, 160)) for _ in range(70)]
@@ -96,11 +145,15 @@ COL = [(110, 235, 255), (255, 55, 75)]
 cam = np.array([-80.0, 750.0]); zoom = 1.0
 shake = flash = 0.0; sparks = []; rings = []; lines_t = -9; trails = [[], []]; prev = [None, None]
 fired = set()
+bodies = [Body(P['tuck']), Body(P['stance'])]
 
 for f in range(int(DUR*FPS)):
     t = f / FPS
     st = [sample(A, t), sample(B, t)]
-    sk = [skeleton(*st[0], 1), skeleton(*st[1], -1)]
+    ahead = [sample(A, t + 0.06), sample(B, t + 0.06)]   # la cible est légèrement en avance : le ressort arrive pile sur le beat
+    for i in range(2):
+        bodies[i].step(target_angles(ahead[i][3], ahead[i][4], t, i*1.7), 1/FPS)
+    sk = [skeleton2(st[0][0], st[0][1], st[0][2], bodies[0].a, 1), skeleton2(st[1][0], st[1][1], st[1][2], bodies[1].a, -1)]
 
     # caméra : suit l'orbe pendant la chute, puis le milieu des combattants
     if t < 1.7:
@@ -108,9 +161,9 @@ for f in range(int(DUR*FPS)):
     else:
         xs = [st[0][0], min(st[1][0], st[0][0] + (60 if t < 2.6 else 520))]
         tgt = np.array([sum(xs)/2, max(st[0][1], st[1][1])*0.55 + 60])
-        zt = float(np.clip(330/(abs(xs[1]-xs[0]) + 170), 0.5, 1.45))
-    cam += (tgt - cam) * (0.35 if t < 1.7 else 0.16)
-    zoom += (zt - zoom) * 0.12
+        zt = float(np.clip(300/(abs(xs[1]-xs[0]) + 230), 0.42, 1.35))
+    cam += (tgt - cam) * (0.35 if t < 1.7 else 0.25)
+    zoom += (zt - zoom) * 0.2
 
     # déclenchement des effets
     for i, (ft, fx, fh, fs, kind) in enumerate(FX):
@@ -123,6 +176,11 @@ for f in range(int(DUR*FPS)):
                 v = random.uniform(3, 6 + fs*4)
                 col = (255, 225, 140) if kind in ("hit", "clash") else (150, 120, 90)
                 sparks.append([fx, fh, math.cos(a)*v*(1.6 if kind in ("land","dust") else 1), math.sin(a)*v, 1.0, col])
+            for j in range(2):
+                if st[j][4] in ("hit", "flail", "lie", "block") or kind in ("land", "clash"):
+                    if abs(st[j][0] - fx) < 110:
+                        bodies[j].v[[0, 1, 2]] += np.array([-4, -9, -16])*fs*(0.4 if kind == "land" else 1)
+                        bodies[j].v[[3, 4, 5, 6]] += np.random.uniform(-14, 14, 4)*fs
             if kind in ("land", "clash", "hit") and fs >= 1:
                 rings.append([fx, fh, 0.0, fs, kind == "land"])
             if kind == "clash" or fs >= 2.5: lines_t = f
@@ -178,12 +236,12 @@ for f in range(int(DUR*FPS)):
             a = (j + 1) / len(trails[i]) * 0.45
             c = tuple(int(v*a) for v in COL[i])
             for b0, b1 in BONES:
-                gd.line([tr[b0+1], tr[b1+1]], fill=c, width=wdt)
+                gd.line([tr[b0], tr[b1]], fill=c, width=wdt)
         for dr, w_, c in ((gd, wdt*2, COL[i]), (d, wdt, tuple(min(255, v+60) for v in COL[i]))):
             for b0, b1 in BONES:
-                dr.line([scr[b0+1], scr[b1+1]], fill=c, width=w_)
+                dr.line([scr[b0], scr[b1]], fill=c, width=w_)
             for p in scr: dr.ellipse([p[0]-w_/2, p[1]-w_/2, p[0]+w_/2, p[1]+w_/2], fill=c)
-            hx, hy2 = scr[2]; r = 11*sc
+            hx, hy2 = scr[3]; r = 11*sc
             dr.ellipse([hx-r, hy2-r, hx+r, hy2+r], fill=c)
         # ombre au sol
         gx, gy = S(st[i][0], 0); sw = 40*sc/(1 + st[i][1]/150)
