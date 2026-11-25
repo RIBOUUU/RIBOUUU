@@ -571,6 +571,12 @@ for wx in []:
     PILLARS.append(dict(kind="wall", x=wx, z0=-90, z1=55, w=26, h=random.uniform(200, 260), alive=True))
 PILLARS = []   # plus de piliers
 CRATERS = []; MARKS = []; DEBRIS = []; MCRATERS = []
+TOWERS = []
+tx_ = min(_xs) - 900
+while tx_ < max(_xs) + 900:
+    TOWERS.append(dict(x=tx_ + random.uniform(-80, 80), z=random.uniform(-2600, -1900), w=random.uniform(110, 170), H=random.uniform(650, 1000), fall=None, dir=1, done=False))
+    tx_ += random.uniform(330, 560)
+TRENCH = []; BIRDS = []; BOLT = None; WIND = 0.0; CLOUD_PUSH = 0.0
 LAVA = []
 for k in range(70):
     x_, z_ = random.uniform(min(_xs) - 500, max(_xs) + 500), random.uniform(-420, 600); pl = [(x_, 0.6, z_)]
@@ -580,10 +586,10 @@ for k in range(70):
     LAVA.append(pl)
 def crater(x, r, z=None):
     CRATERS.append((x, random.uniform(-10, 10) if z is None else z, r, [(random.uniform(0, 2*math.pi), random.uniform(1.3, 2.4)) for _ in range(7)]))
-def debris(x, h, z, n, push=0.0, up=1.0, fl=0.0):
+def debris(x, h, z, n, push=0.0, up=1.0, fl=0.0, sz=None):
     for _ in range(n):
         DEBRIS.append([x + random.uniform(-10, 10), h + random.uniform(0, 20), z + random.uniform(-10, 10),
-                       push + random.uniform(-4, 4), random.uniform(2, 9)*up, random.uniform(-3, 3), random.uniform(3, 8), False, fl])
+                       push + random.uniform(-4, 4), random.uniform(2, 9)*up, random.uniform(-3, 3), (random.uniform(*sz) if sz else random.uniform(3, 8)), False, fl])
 def break_pillars(x, rad, push=0.0):
     for p in PILLARS:
         if p["alive"] and abs(p["x"] - x) < rad:
@@ -599,7 +605,7 @@ bodies = [Body(P["tuck"]), Body(P["stance"])]
 feet = [dict(anc=[None, None], stp=[None, None], last=[0.0, 0.0]) for _ in range(2)]
 prevsk = [np.zeros((12, 2)), np.zeros((12, 2))]
 hitflash = np.zeros(2); camT = np.array([-80.0, 750.0, 0.0]); zoom = 1.0; cur_shot = None
-shake = flash = 0.0; sparks = []; rings = []; lines_t = -99; inv_t = -99; LASTV = None; trails = [[], []]
+shake = flash = 0.0; sparks = []; rings = []; lines_t = -99; inv_t = -99; LASTV = None; IMPACTS = []; lines_col = (255, 255, 255); lines_pos = None; flash_col = np.array([255, 255, 255], np.float32); IMPK = 0; trails = [[], []]
 fired = set(); ta_prev = 0.0; L_prev = 1.0
 
 def ik_target(ik, ta):
@@ -699,19 +705,47 @@ for f in range(int(DUR*FPS/SLOW)):
             pos = prevsk[j][idx] if isinstance(idx, int) else prevsk[j][0] + (prevsk[j][1] - prevsk[j][0])*idx
             fxp, fh, fz = pos[0], max(0, pos[1]), FZ[j]
         s, kind = e["s"], e["kind"]
-        if kind not in ("dust", "whoosh"): shake = max(shake, s*9); flash = max(flash, min(1, s/3.2))
+        att_ = (1 - e["victim"]) if (e["victim"] is not None and kind in ("hit", "block", "parry")) else None
+        acol = COL[att_] if att_ is not None else None
+        if kind not in ("dust", "whoosh"):
+            shake = max(shake, s*9); flash = max(flash, min(1, s/3.2))
+            flash_col = np.array(acol if acol else (255, 255, 255), np.float32)
         n = int(8 + s*14) if kind != "whoosh" else 0
         for _ in range(n):
             grd = kind in ("land", "dust")
             an = random.uniform(0.1, math.pi - 0.1) if grd else random.uniform(0, 2*math.pi)
             v = random.uniform(3, 6 + s*4)
-            col = (255, 225, 140) if kind in ("hit", "clash", "parry") else (190, 200, 255) if kind == "block" else (150, 120, 90)
+            col = mix(acol, (255, 255, 255), random.uniform(0, 0.45)) if acol else (255, 225, 140) if kind == "clash" else (150, 120, 90)
             sparks.append([fxp, fh, fz, math.cos(an)*v*(1.6 if grd else 1), math.sin(an)*v, random.uniform(-1, 1)*v*0.8, 1.0, col])
         if kind == "whoosh":
             for _ in range(6):
                 sparks.append([fxp, fh, fz, random.uniform(-9, 9), random.uniform(-2, 2), 0, 0.6, (200, 200, 220)])
-        if kind in ("land", "clash", "hit") and s >= 1: rings.append([fxp, fh, 0.0, s, kind == "land"])
-        if kind in ("clash", "boom", "hit", "block"): lines_t = f
+        if kind in ("land", "clash", "hit") and s >= 1: rings.append([fxp, fh, 0.0, s, kind == "land", acol or (255, 255, 255)])
+        if kind in ("clash", "boom", "hit", "block"): lines_t = f; lines_col = acol or (255, 255, 255); lines_pos = (fxp, fh, fz)
+        if acol:   # un effet spectaculaire différent à chaque impact
+            IMPK += 1
+            dirx = 1 if fxp >= st[att_]["x"] else -1
+            # 1) le sol réagit : tranchée qui se fend, dalles qui se soulèvent, geyser de terre
+            TRENCH.append(dict(x=fxp, z=fz, dir=dirx, L=random.uniform(220, 420), age=0.0, jag=[random.uniform(-14, 14) for _ in range(9)]))
+            debris(fxp + dirx*40, 0, fz, 6, dirx*3, 1.4, 0.0, (12, 22))
+            for _ in range(45):
+                sparks.append([fxp + random.uniform(-15, 15), 0, fz + random.uniform(-15, 15), random.uniform(-2.5, 2.5), random.uniform(9, 20), random.uniform(-2, 2), 1.0, (120, 95, 70)])
+            # 2) réaction en chaîne : l'onde de choc va faire tomber une tour au loin (un coup sur deux)
+            if IMPK % 2 == 0:
+                cand = [tw for tw in TOWERS if tw["fall"] is None and abs(tw["x"] - fxp) < 2200]
+                if cand:
+                    tw = min(cand, key=lambda tw: abs(tw["x"] - fxp)); dd_ = math.hypot(tw["x"] - fxp, tw["z"] - fz)
+                    tw["fall"] = ta + dd_/2200 + 0.1; tw["dir"] = 1 if tw["x"] >= fxp else -1
+                    rings.append([fxp, 0, 0.0, 7, True, acol])
+            # 3) le ciel réagit : éclair / trouée dans les nuages / oiseaux / bourrasque
+            sk_ = IMPK % 4
+            if sk_ == 0: BOLT = dict(x=fxp + random.uniform(-200, 200), z=fz + random.uniform(-300, 50), t=f)
+            elif sk_ == 1: CLOUD_PUSH = 1.0
+            elif sk_ == 2:
+                bx = fxp + random.uniform(-500, 500)
+                for _ in range(14): BIRDS.append([bx + random.uniform(-60, 60), random.uniform(40, 90), random.uniform(-900, -500), random.uniform(-3, 3), random.uniform(3, 6), random.uniform(-1, 1), random.random()*6])
+            else: WIND = 1.0
+            IMPACTS.append(dict(x=fxp, h=fh, z=fz, col=acol, age=0.0, s=s, kind=("star", "dome", "bolts", "shards", "pillar", "crack")[IMPK % 6], seed=random.random()))
         if kind in ("clash", "boom") or s >= 2.0: inv_t = f
         if kind == "boom":
             for _ in range(140):
@@ -866,8 +900,10 @@ for f in range(int(DUR*FPS/SLOW)):
         if kind == "moon": d.ellipse([p[0]-rad+7, p[1]-rad-3, p[0]+rad+7, p[1]+rad-3], fill=tuple(int(v) for v in skyc[0]) if False else tuple(int(v) for v in mix(top, hor, 0.3)))
     # nuages en accéléré
     cm = Image.new("L", (W, H)); cd = ImageDraw.Draw(cm)
+    CLOUD_PUSH *= 0.97; WIND *= 0.96
     for cl in CLOUDS:
-        cl[0] += 0.55/FPS
+        rel_ = cl[0] + math.radians(yaw)
+        cl[0] += 0.55/FPS*(1 + 6*WIND) + CLOUD_PUSH*0.06*(1 if rel_ >= 0 else -1)
         if cl[0] > 1.6: cl[0] -= 3.2
         p = sky_pt(cl[0], cl[1])
         if p and p[1] < hy:
@@ -926,6 +962,27 @@ for f in range(int(DUR*FPS/SLOW)):
             d.polygon([p[:2] for p in P_], fill=tuple(int(np.clip(v*shd, 0, 255)) for v in col0))
             S_ = [proj(b0 + (ap_ - b0)*0.74), proj(b1 + (ap_ - b1)*0.74), P_[2]]   # neige au sommet
             if all(S_): d.polygon([p[:2] for p in S_], fill=tuple(int(np.clip(v*shd, 0, 255)) for v in mix(col0, (255, 110, 30) if TH == "volcan" else (235, 238, 245), 0.55*L + 0.2 if TH != "volcan" else 0.8)))
+    tcol = np.array([92, 84, 82])*L + np.array(hor)*0.15
+    for tw in sorted(TOWERS, key=lambda tw: -((np.array([tw["x"], 0, tw["z"]]) - C) @ fw)):
+        p_ = 0.0 if tw["fall"] is None else float(np.clip((ta - tw["fall"])/1.3, 0, 1))
+        if p_ >= 1 and not tw["done"]:   # elle s'écrase : nuage de poussière et rochers
+            tw["done"] = True; debris(tw["x"] + tw["dir"]*tw["H"]*0.6, 0, tw["z"], 40, tw["dir"]*4, 1.2, 0.0, (10, 30))
+            for _ in range(60): sparks.append([tw["x"] + tw["dir"]*random.uniform(0, tw["H"]), random.uniform(0, 40), tw["z"] + random.uniform(-60, 60), random.uniform(-4, 4), random.uniform(1, 6), random.uniform(-3, 3), 1.0, (150, 135, 120)])
+            shake = max(shake, 7)
+        if tw["done"]:
+            box_ = [(tw["x"] + tw["dir"]*u_*tw["H"], tw["z"], 30) for u_ in (0.2, 0.5, 0.8)]
+            for bx_, bz_, bh_ in box_:
+                pp_ = [proj(q) for q in ((bx_ - 45, 0, bz_ + 40), (bx_ + 45, 0, bz_ + 40), (bx_ + 25, bh_, bz_), (bx_ - 25, bh_, bz_))]
+                if all(pp_): d.polygon([q[:2] for q in pp_], fill=tuple(int(v*0.8) for v in tcol))
+            continue
+        an_ = (p_**2)*math.pi/2*tw["dir"]; piv = tw["x"] + tw["dir"]*tw["w"]/2
+        def rot_(x_, y_): dx_ = x_ - piv; return (piv + dx_*math.cos(an_) + y_*math.sin(an_), -dx_*math.sin(an_) + y_*math.cos(an_))
+        for zf, shd in ((tw["z"] + tw["w"]/2, 1.0), (tw["z"] - tw["w"]/2, 0.7)):
+            cs = [rot_(tw["x"] - tw["w"]/2, 0), rot_(tw["x"] + tw["w"]/2, 0), rot_(tw["x"] + tw["w"]/2*0.8, tw["H"]), rot_(tw["x"] - tw["w"]/2*0.8, tw["H"])]
+            pp_ = [proj((cx2, cy2, zf)) for cx2, cy2 in cs]
+            if all(pp_): d.polygon([q[:2] for q in pp_], fill=tuple(int(min(255, v*shd)) for v in tcol))
+        if 0 < p_ < 1 and random.random() < 0.6:
+            sparks.append([tw["x"], random.uniform(0, 30), tw["z"], random.uniform(-3, 3), random.uniform(1, 4), 0, 0.8, (150, 135, 120)])
     for mx, my, mz, mr, cracks in MCRATERS:   # trou laissé dans la paroi
         poly = [proj((mx + mr*math.cos(u), my + mr*0.8*math.sin(u), mz)) for u in np.linspace(0, 2*math.pi, 18)]
         if all(poly): d.polygon([p[:2] for p in poly], fill=tuple(int(v*0.35) for v in mbase))
@@ -949,6 +1006,16 @@ for f in range(int(DUR*FPS/SLOW)):
         for an, ln in cracks:
             pts_ = [proj((cx_ + r_*k_*math.cos(an + 0.15*math.sin(k_*7)), 0.5, cz_ + r_*k_*0.7*math.sin(an + 0.15*math.sin(k_*7)))) for k_ in np.linspace(0.9, ln, 5)]
             if all(pts_): d.line([p[:2] for p in pts_], fill=dark, width=2)
+    for tr in TRENCH:   # tranchées qui se fendent depuis le point d'impact
+        tr["age"] = min(1.0, tr["age"] + 0.12*spd); Lc = tr["L"]*tr["age"]
+        pts_up, pts_dn = [], []
+        for k_, jg in enumerate(tr["jag"]):
+            u_ = k_/(len(tr["jag"]) - 1); xx3 = tr["x"] + tr["dir"]*Lc*u_; wd_ = 16*(1 - u_) + 3
+            pts_up.append(proj((xx3, 0.6, tr["z"] + jg*0.4 - wd_))); pts_dn.append(proj((xx3, 0.6, tr["z"] + jg*0.4 + wd_)))
+        if all(pts_up) and all(pts_dn):
+            poly = [q[:2] for q in pts_up] + [q[:2] for q in reversed(pts_dn)]
+            d.polygon(poly, fill=tuple(int(v*0.32) for v in gb)); d.line([q[:2] for q in pts_up], fill=tuple(int(min(255, v*1.2)) for v in gb), width=2)
+    if len(TRENCH) > 60: TRENCH[:] = TRENCH[-60:]
     for x0_, x1_, z_ in MARKS:
         q_ = seg((x0_, 0.3, z_), (x1_, 0.3, z_))
         if q_: d.line([q_[0][:2], q_[1][:2]], fill=dark, width=max(1, int(5*fpx/q_[0][2])))
@@ -1098,7 +1165,7 @@ for f in range(int(DUR*FPS/SLOW)):
     for r in rings:
         r[2] += spd; a_ = max(0, 1 - r[2]/14); rad = r[2]*(14 + r[3]*6)
         if r[2] < 1: continue
-        col = tuple(int(255*a_) for _ in range(3)); wd = max(1, int(6*a_))
+        col = tuple(int(c*a_) for c in (r[5] if len(r) > 5 else (255, 255, 255))); wd = max(1, int(6*a_))
         if r[4]:
             poly = [proj((r[0] + rad*math.cos(u), 1, rad*math.sin(u))) for u in np.linspace(0, 2*math.pi, 28)]
             if all(poly): gd.line([p[:2] for p in poly], fill=col, width=wd)
@@ -1108,10 +1175,64 @@ for f in range(int(DUR*FPS/SLOW)):
     rings = [r for r in rings if r[2] < 14]
     if f - lines_t < 8:
         a_ = 1 - (f - lines_t)/8
+        lp = proj(lines_pos) if lines_pos else None
+        cxl, cyl = (lp[0], lp[1]) if lp else (W/2, H/2)
         for _ in range(40):
-            an = random.uniform(0, 2*math.pi); r0 = random.uniform(180, 300)
-            gd.line([W/2 + math.cos(an)*r0, H/2 + math.sin(an)*r0, W/2 + math.cos(an)*900, H/2 + math.sin(an)*900],
-                    fill=tuple(int(200*a_) for _ in range(3)), width=2)
+            an = random.uniform(0, 2*math.pi); r0 = random.uniform(150, 260)
+            gd.line([cxl + math.cos(an)*r0, cyl + math.sin(an)*r0, cxl + math.cos(an)*1100, cyl + math.sin(an)*1100],
+                    fill=tuple(int(c*a_*0.85) for c in lines_col), width=2)
+    # ---------- effets d'impact spectaculaires ----------
+    for im in IMPACTS:
+        im["age"] += spd
+        L_ = 9.0; u = im["age"]/L_
+        if u >= 1: continue
+        pc = proj((im["x"], im["h"], im["z"]))
+        if not pc: continue
+        sc_ = fpx/pc[2]; cx_, cy_ = pc[0], pc[1]; c_ = im["col"]; fa = 1 - u
+        cc = tuple(int(v*fa) for v in c_); wc = tuple(int(255*fa) for _ in range(3))
+        rnd = random.Random(int(im["seed"]*1e6))
+        if im["kind"] == "star":      # éclat en étoile (reflet d'objectif)
+            for k_ in range(4):
+                an = k_*math.pi/4 + im["seed"]; ln = (90 + 160*u)*sc_*(1.6 if k_ % 2 == 0 else 0.8)
+                gd.polygon([(cx_ + math.cos(an)*ln, cy_ + math.sin(an)*ln), (cx_ + math.cos(an + 1.57)*6*sc_, cy_ + math.sin(an + 1.57)*6*sc_),
+                            (cx_ - math.cos(an)*ln, cy_ - math.sin(an)*ln), (cx_ - math.cos(an + 1.57)*6*sc_, cy_ - math.sin(an + 1.57)*6*sc_)], fill=cc)
+            r_ = 18*sc_*fa; d.ellipse([cx_-r_, cy_-r_, cx_+r_, cy_+r_], fill=wc)
+        elif im["kind"] == "dome":    # dôme d'énergie qui gonfle
+            r_ = (20 + 140*u**0.6)*sc_
+            gd.ellipse([cx_-r_, cy_-r_, cx_+r_, cy_+r_], fill=tuple(int(v*fa*0.35) for v in c_))
+            gd.ellipse([cx_-r_, cy_-r_, cx_+r_, cy_+r_], outline=cc, width=max(2, int(8*fa)))
+            d.ellipse([cx_-r_*0.98, cy_-r_*0.98, cx_+r_*0.98, cy_+r_*0.98], outline=wc, width=1)
+        elif im["kind"] == "bolts":   # éclairs qui jaillissent
+            for k_ in range(8):
+                an = k_*math.pi/4 + rnd.uniform(-0.3, 0.3); pts_ = [(cx_, cy_)]
+                for j_ in range(5):
+                    rr = (j_ + 1)*(18 + 30*u)*sc_; an += rnd.uniform(-0.5, 0.5)
+                    pts_.append((cx_ + math.cos(an)*rr, cy_ + math.sin(an)*rr))
+                gd.line(pts_, fill=cc, width=max(2, int(5*fa))); d.line(pts_, fill=wc, width=1)
+        elif im["kind"] == "shards":  # éclats d'énergie projetés
+            for k_ in range(12):
+                an = rnd.uniform(0, 2*math.pi); rr = (20 + 170*u)*sc_*rnd.uniform(0.6, 1.2); ln = 22*sc_*fa
+                px_, py_ = cx_ + math.cos(an)*rr, cy_ + math.sin(an)*rr
+                gd.polygon([(px_ + math.cos(an)*ln, py_ + math.sin(an)*ln), (px_ + math.cos(an + 2.6)*ln*0.4, py_ + math.sin(an + 2.6)*ln*0.4),
+                            (px_ + math.cos(an - 2.6)*ln*0.4, py_ + math.sin(an - 2.6)*ln*0.4)], fill=cc)
+                d.point((px_, py_), fill=wc)
+        elif im["kind"] == "pillar":  # colonne d'énergie jusqu'au ciel
+            wq = (26*fa + 4)*sc_; top_ = proj((im["x"], im["h"] + 2000, im["z"]))
+            bot_ = proj((im["x"], 0, im["z"]))
+            if top_ and bot_:
+                gd.polygon([(bot_[0] - wq*2, bot_[1]), (bot_[0] + wq*2, bot_[1]), (top_[0] + wq*2, top_[1]), (top_[0] - wq*2, top_[1])], fill=cc)
+                d.polygon([(bot_[0] - wq*0.4, bot_[1]), (bot_[0] + wq*0.4, bot_[1]), (top_[0] + wq*0.4, top_[1]), (top_[0] - wq*0.4, top_[1])], fill=wc)
+        else:                         # fissures au sol + pics de roche qui jaillissent
+            for k_ in range(9):
+                an = rnd.uniform(0, 2*math.pi); ln = rnd.uniform(80, 180)*min(1, u*3)
+                q_ = seg((im["x"], 0.5, im["z"]), (im["x"] + math.cos(an)*ln, 0.5, im["z"] + math.sin(an)*ln*0.7))
+                if q_: gd.line([q_[0][:2], q_[1][:2]], fill=cc, width=3); d.line([q_[0][:2], q_[1][:2]], fill=wc, width=1)
+                sp_ = math.sin(min(1, u*2.5)*math.pi)*rnd.uniform(25, 60)
+                b_ = proj((im["x"] + math.cos(an)*ln*0.6, 0, im["z"] + math.sin(an)*ln*0.42)); t_ = proj((im["x"] + math.cos(an)*ln*0.6, sp_, im["z"] + math.sin(an)*ln*0.42))
+                if b_ and t_ and sp_ > 2:
+                    ww = 7*fpx/b_[2]; d.polygon([(b_[0] - ww, b_[1]), (b_[0] + ww, b_[1]), (t_[0], t_[1])], fill=(110, 100, 95))
+            r_ = 14*sc_*fa; gd.ellipse([cx_-r_*3, cy_-r_*3, cx_+r_*3, cy_+r_*3], fill=cc)
+    IMPACTS[:] = [im for im in IMPACTS if im["age"] < 9.0]
     if BEAM["tc"] <= t < BEAM["t1"]:
         wi, vi = BEAM["who"], BEAM["vic"]; Fw_ = st[wi]["F"]
         hw = (sk[wi][5] + sk[wi][7])/2; hp_ = proj((hw[0], hw[1], 0))
@@ -1164,9 +1285,23 @@ for f in range(int(DUR*FPS/SLOW)):
             else: shake = max(shake, 7*fade)
             if t >= BEAM["tb"] and t - BEAM["tb"] < 0.6:
                 MARKS.append((hw[0] + Fw_*40, hw[0] + Fw_*min(Lb, 1800), 0)); break_pillars(hw[0] + Fw_*Lb*0.5, Lb*0.5)
+    if BOLT and f - BOLT["t"] < 4:
+        tgp = proj((BOLT["x"], 0, BOLT["z"]))
+        if tgp:
+            rb_ = random.Random(BOLT["t"]); x_ = tgp[0] + rb_.uniform(-150, 150); pts_ = [(x_, -10)]
+            for k_ in range(1, 12): u_ = k_/11; pts_.append((x_ + (tgp[0] - x_)*u_ + (rb_.uniform(-30, 30) if k_ < 11 else 0), -10 + (tgp[1] + 10)*u_))
+            gd.line(pts_, fill=(200, 210, 255), width=6); d.line(pts_, fill=(255, 255, 255), width=2)
+            if f == BOLT["t"]: flash = max(flash, 0.5); crater(BOLT["x"], 30, BOLT["z"])
+    for b_ in BIRDS:   # nuée d'oiseaux qui s'envole
+        b_[0] += b_[3]*spd; b_[1] += b_[4]*spd; b_[2] += b_[5]*spd; b_[6] += 0.5*spd
+        pb_ = proj(b_[:3])
+        if pb_:
+            r_ = max(2, 6*fpx/pb_[2]); fl_ = math.sin(b_[6])*r_*0.6
+            d.line([(pb_[0] - r_, pb_[1] - fl_), (pb_[0], pb_[1]), (pb_[0] + r_, pb_[1] - fl_)], fill=(30, 26, 26), width=2)
+    BIRDS[:] = [b_ for b_ in BIRDS if b_[1] < 900]
     for p3 in DUST3:   # particules en 3D : les plus proches sont grosses et floues
         wx_ = camT[0] + ((p3[0] - camT[0] + 700) % 1400) - 700; wz_ = camT[2] + ((p3[2] - camT[2] + 700) % 1400) - 700
-        p3[0] += p3[3]*spd; p3[1] = 10 + (p3[1] - 10 + 0.3*spd) % 260
+        p3[0] += (p3[3] + 14*WIND)*spd; p3[1] = 10 + (p3[1] - 10 + 0.3*spd) % 260
         pp_ = proj((wx_, p3[1], wz_))
         if pp_:
             r_ = max(0.6, 2.2*fpx/pp_[2]); c_ = tuple(int(v*min(1, 180/pp_[2] + 0.25)) for v in (70, 62, 52))
@@ -1179,7 +1314,7 @@ for f in range(int(DUR*FPS/SLOW)):
             s[0] = (s[0] - 0.8*s[2] + 0.5*math.sin(t + s[2]*5)) % W; s[1] = (s[1] + 2.2*s[2]) % H
             d.ellipse([s[0]-1.5, s[1]-1.5, s[0]+1.5, s[1]+1.5], fill=(250, 252, 255))
         else:
-            s[0] = (s[0] - 1.5*s[2]) % W; s[1] = (s[1] + 0.6*s[2]) % H
+            s[0] = (s[0] - 1.5*s[2]*(1 + 8*WIND)) % W; s[1] = (s[1] + 0.6*s[2]) % H
             d.point((s[0], s[1]), fill=tuple(int(v) for v in mix((170, 150, 130), (90, 90, 110), night)))
 
     # « JOUR N » à chaque lever du soleil
@@ -1193,7 +1328,7 @@ for f in range(int(DUR*FPS/SLOW)):
     if t < DK0: dk = 0.0
     arr = np.asarray(img, np.float32)*(1 - dk) + np.asarray(glow.filter(ImageFilter.GaussianBlur(10)), np.float32)*0.9 \
           + np.asarray(glow, np.float32)*0.25
-    arr = arr*vign + flash*150
+    arr = arr*vign + flash*150*(flash_col/255.0)
     if f - inv_t == 0: arr = 255 - np.clip(arr, 0, 255)
     if sh is not None: arr[:70] = 0; arr[-70:] = 0
     ff.stdin.write(np.clip(arr, 0, 255).astype(np.uint8).tobytes())
