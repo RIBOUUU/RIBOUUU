@@ -223,7 +223,8 @@ def dazed(d, t0, t_next):   # sonné : se tient la tête, titube
     Td.add(t0 + dur, pose="stance")
 
 RAGE = []; THEME_T = []
-def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False, avail=None):
+KOS = []; KO_TXT = []
+def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False, avail=None, ko=False):
     Ta, Td = T[a], T[d]; ts = ti - wu
     sa, sd = Ta.state(ts), Td.state(ti); Fa = sa["F"]; hv = sd["h"]
     if hv > 8 or abs(sd["x"] - sa["x"]) > 160:
@@ -277,7 +278,46 @@ def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False,
     if outc == "hit":
         fx(ti, "hit", power, (d, zi), d, zone)
         rp = REACT_POSE[zone]
-        if rage:   # projeté, rebondit deux fois, retombe sur ses pieds... et il est furieux
+        if ko:   # COUP FINAL : envoyé très loin, K.O. au sol au moins 2 secondes
+            fx(ti, "finisher", 3.0, (d, zi), d, zone); KO_TXT.append((ti + 0.15, a))
+            D = 950 + random.uniform(0, 250); sg = 1 if zone == "legs" else -1
+            Td.add(ti); Td.add(ti + 0.05, pose="flail", x=xd + Fa*45, h=hv + 12, rot=sg*25, plant=NONE, ease="out")
+            if rage:   # rebondit deux fois avant de s'écraser
+                t1_ = ti + 0.55; t2_ = t1_ + 0.32; tl = t2_ + 0.28
+                Td.add(t1_, pose="flail", x=xd + Fa*D*0.55, h=0, rot=sg*300, ease="grav")
+                Td.add(t2_, pose="flail", x=xd + Fa*D*0.8, h=0, rot=sg*560, ease="grav")
+                fx(t1_, "land", 2.0, (d, 0), d); fx(t2_, "land", 1.6, (d, 0), d)
+            else: tl = ti + 1.0
+            Td.add(tl, pose="flail", x=xd + Fa*D, h=0, rot=sg*450, ease="grav"); Td.add(tl + 0.06, pose="hit_head")
+            Td.add(tl + 0.45, x=xd + Fa*(D + 220), ease="out")
+            fx(tl, "land", 2.6, (d, 0), d); FLIGHTS.append((xd, xd + Fa*(D + 220)))
+            tk = tl + 2.15
+            for k in range(1, 5): Td.add(tl + 0.45 + k*0.38, pose="hit_head", x=xd + Fa*(D + 220) + random.uniform(-1.5, 1.5))
+            KOS.append((tl + 0.1, tk, d))
+            if air: Ta.add(ti + 0.5, h=hv, pose="fly"); Ta.add(ti + 1.2, h=0, pose="stance", ease="io"); Ta.add(ti + 1.25, plant=BOTH)
+            Ta.add(ti + 1.3, pose="scream", ease="out"); Ta.add(ti + 2.0, pose="scream"); Ta.add(ti + 2.3, pose="stance")   # cri de victoire
+            if not rage:
+                slowmo(ti, d, tk)
+                Td.add(tk); Td.add(tk + 0.4, rot=sg*360, pose="stance", ease="out"); Td.add(tk + 0.5, plant=BOTH)
+                return tk + 0.5
+            # se relève fou de rage, au ralenti, puis repart : le sol explose et le décor change
+            Td.add(tk); Td.add(tk + 0.3, rot=sg*360, pose="rage", h=0, ease="out"); Td.add(tk + 0.35, plant=BOTH)
+            slowmo(ti, d, tl)
+            t0 = tk + 0.3; S_ = 0.8; C_ = (t_next - 0.12) - (t0 + S_)
+            if C_ < 0.2: S_ = max(0.4, (t_next - 0.12 - t0) - 0.25); C_ = (t_next - 0.12) - (t0 + S_)
+            RAMPS.append((t0, S_, C_, 0.25))
+            SHOT3[:] = [x for x in SHOT3 if x[1] < t0 or x[0] > t0 + S_]
+            SHOT3.append((t0, t0 + S_, dict(yaw=-Fa*random.uniform(30, 55), pitch=-8, dist=190, orbit=Fa*25, follow="A" if d == 0 else "B")))
+            tla = t0 + 0.25*S_; xr = xd + Fa*(D + 220)
+            Td.add(tla - 0.12, pose="rage"); Td.add(tla - 0.05, pose="rage2", ease="out"); Td.add(tla - 0.01, pose="rage2")
+            fx(t0 + 0.01, "rage", 2.0, (d, 0), d)
+            Td.add(tla, pose="dash", plant=NONE, ease="in")
+            xa_ = Ta.state(t_next - 0.3)["x"]
+            Td.add(t_next - 0.3, x=xa_ + Fa*130, pose="dash", ease="in")
+            fx(tla, "erupt", 5, ("pt", xr + Fa*40, 0, 0))
+            THEME_T.append(tla); RAGE.append((t0, t_next + 0.9, d))
+            return t_next - 0.3
+        if rage:   # (ancienne version, plus utilisée)
             D1 = 380 + 100*power; t1_ = ti + 0.38; t2_ = t1_ + 0.3; tl = t2_ + 0.25
             Td.add(ti); Td.add(ti + 0.05, pose="flail", x=xd + Fa*30, h=hv + 8, rot=-20, plant=NONE, ease="out")
             Td.add(t1_, pose="flail", x=xd + Fa*D1, h=0, rot=-300, ease="grav")
@@ -376,43 +416,39 @@ groups.append(cur)
 upright_ = lambda s_: abs(((s_["rot"] + 180) % 360) - 180) < 1 and s_["h"] < 1
 att, last_m = 0, None
 RAGE_G = []
-for gi_ in range(3, len(groups)):
-    gp__ = groups[gi_][0] - groups[gi_-1][-1]
-    if gp__ >= 2.0 and groups[gi_][0] < TC - 1 and len(RAGE_G) < 2 and (not RAGE_G or gi_ - RAGE_G[-1] >= 3): RAGE_G.append(gi_)
-RAGED = None
+busy = 4.0; ex = 0; RAGED = None; gstarts = [g[0] for g in groups]
 for gi, g in enumerate(groups):
+    if g[0] < busy + 0.25: continue          # l'adversaire est encore K.O. : on attend
+    if g[0] > TC - 2.6: break                # plus le temps pour un échange + K.O. avant la finale
     a, d = att, 1 - att
-    if gi in RAGE_G and RAGED is not None: a, d = RAGED, 1 - RAGED
-    t_next = groups[gi+1][0] if gi + 1 < len(groups) else TC
+    if RAGED is not None: a, d = RAGED, 1 - RAGED; RAGED = None
+    ex += 1
     tp = g[0] - 0.7
     sa, sd = T[a].state(tp), T[d].state(tp)
-    gp_ = g[0] - (groups[gi-1][-1] if gi else 4.0)
-    if gi >= 1 and gp_ >= 1.45 and random.random() < 0.8 and not gi % 3 == 2 and gi not in RAGE_G:
-        tb0 = g[0] - gp_ + 0.35                      # rafale de boules d'énergie
+    gp_ = g[0] - busy
+    if ex > 1 and gp_ >= 1.3 and random.random() < 0.7:
+        tb0 = busy + 0.3                             # rafale de boules d'énergie
         sa_, sd_ = T[a].state(tb0 - 0.02), T[d].state(tb0 - 0.02)
         tls = [tb0 + k*0.12 for k in range(6)]
         if abs(sa_["z"]) < 5 and abs(sd_["z"]) < 5 and tls[-1] + 0.3 < g[0] - 0.35:
             Fa_ = 1 if sd_["x"] > sa_["x"] else -1
-            for i_, s_ in ((a, sa_), (d, sd_)):   # se stabilisent (au sol ou en vol)
-                T[i_].add(tb0 - 0.45); T[i_].add(tb0 - 0.2, rot=round(s_["rot"]/360)*360, pose="fly" if s_["h"] > 20 else "stance", ease="out")
-            if (sd_["x"] - sa_["x"])*sa_["F"] < 0: T[a].turn(tb0 - 0.19)
+            if (sd_["x"] - sa_["x"])*sa_["F"] < 0: T[a].turn(tb0 - 0.3)
             T[a].add(tb0 - 0.12); T[d].add(tb0)
-            for k, tl in enumerate(tls): T[a].add(tl, pose="jab" if k % 2 == 0 else "cross", ease="out"); T[a].add(tl + 0.07, pose="fly" if sa_["h"] > 20 else "stance2")
+            for k, tl in enumerate(tls): T[a].add(tl, pose="jab" if k % 2 == 0 else "cross", ease="out"); T[a].add(tl + 0.07, pose="stance2")
             T[d].add(tls[0] + 0.1, pose="block")
             for k, tl in enumerate(tls):
                 PROJ.append(dict(t0=tl, t1=tl + 0.26, a=a, d=d, miss=k % 2 == 1, cap=None, done=False))
                 if k % 2 == 0: T[d].add(tl + 0.26, x=T[d].state(tl + 0.26)["x"] + Fa_*70, pose="block", ease="out")
-            T[d].add(tls[-1] + 0.5, pose="fly" if sd_["h"] > 20 else "stance")
+            T[d].add(tls[-1] + 0.5, pose="stance")
             sa, sd = T[a].state(tp), T[d].state(tp)
     if (sd["x"] - sa["x"])*sa["F"] < 0: T[a].turn(tp - 0.25)
-    gap_prev = g[0] - (groups[gi-1][-1] if gi else 4.0)
-    air = gi % 3 == 2 and gap_prev > 0.8 and gi not in RAGE_G and (gi + 1) not in RAGE_G
+    air = ex % 3 == 0 and gp_ > 1.2
     if air:   # ils s'envolent pour se battre dans le ciel
         Hair = random.uniform(150, 230)
         for i_ in (a, d):
             s_ = T[i_].state(g[0] - 0.8)
             T[i_].add(g[0] - 1.1); T[i_].add(g[0] - 0.95, pose="power", h=0, z=0, rot=round(s_["rot"]/360)*360, plant=BOTH, ease="out")
-            T[i_].add(g[0] - 0.62, pose="power")                       # concentre son énergie pour décoller
+            T[i_].add(g[0] - 0.62, pose="power")
             T[i_].add(g[0] - 0.5, pose="fly", plant=NONE, ease="out")
             T[i_].add(g[0] - 0.22, h=Hair + (12 if i_ == a else 0), ease="out")
             fx(g[0] - 0.95, "power", 1.6, (i_, 9)); fx(g[0] - 0.5, "dust", 1.6, (i_, 9))
@@ -421,22 +457,29 @@ for gi, g in enumerate(groups):
         last = si == len(g) - 1
         prev = g[si-1] if si else ti - 0.6
         avail = ti - prev - 0.07
-        nxt_gap = t_next - ti
-        cands = [m for m, M in MOVES.items() if M[4] <= avail and m != last_m
-                 and (m != "throw" or (last and nxt_gap > 2.2 and not air)) and not (air and m in ("knee", "headb", "bkick"))]
-        if not cands: cands = ["jab"]
-        m = random.choices(cands, [MOVES[c][8] for c in cands])[0]; last_m = m
-        wu = min(MOVES[m][4], max(0.06, avail))
-        outc = "hit" if (m == "throw" or (air and last)) else random.choices(["hit", "block", "dodge", "parry"],
-                                                       [0.85, 0.07, 0.04, 0.04] if last else [0.62, 0.16, 0.12, 0.1])[0]
-        kd = outc == "hit" and last and nxt_gap > 1.9 and random.random() < 0.6
-        rg = last and (gi + 1) in RAGE_G and not air
-        if rg or (gi in RAGE_G and si == 0):   # coup qui déclenche la rage / contre-attaque furieuse
-            m = "cross" if MOVES["hkick"][4] > avail else "hkick"; wu = min(MOVES[m][4], max(0.06, avail)); outc = "hit"; kd = False
-        strike(a, d, m, ti, outc, kd, wu, t_next, air, last, rg, avail)
-        if rg: RAGED = d
-        if outc == "parry": a, d = d, a
-    att = d if random.random() < 0.7 else a
+        if last:   # le coup final
+            m = random.choice([c for c in ("hkick", "upper", "bkick", "cross") if MOVES[c][4] <= max(avail, 0.18)] or ["cross"])
+            if air and m == "bkick": m = "hkick"
+            wu = min(MOVES[m][4], max(0.06, avail))
+            rage_here = ex in (2, 4) and len(THEME_T) < 2
+            nxt = None
+            if rage_here:
+                nxt = next((x for x in gstarts if x >= ti + 1.6 + 2.15 + 1.3), None)
+                if nxt is None or nxt > TC - 2.6: rage_here = False
+            busy = strike(a, d, m, ti, "hit", True, wu, nxt if rage_here else TC, air, True, rage_here, avail, ko=True)
+            if rage_here: RAGED = d
+            last_m = m
+        else:
+            t_nx = g[si+1]
+            cands = [m for m, M in MOVES.items() if M[4] <= avail and m != last_m and m != "throw" and not (air and m in ("knee", "headb", "bkick"))]
+            if not cands: cands = ["jab"]
+            m = random.choices(cands, [MOVES[c][8] for c in cands])[0]; last_m = m
+            wu = min(MOVES[m][4], max(0.06, avail))
+            outc = random.choices(["hit", "block", "dodge", "parry"], [0.62, 0.16, 0.12, 0.1])[0]
+            strike(a, d, m, ti, outc, False, wu, t_nx, air, False, False, avail)
+            if outc == "parry": a, d = d, a
+    att = d if RAGED is None else RAGED
+    if RAGED is None and random.random() < 0.3: att = a
 
 # --- finale : le rouge est sonné ; le bleu se transforme (cheveux dorés), puis charge son rayon ---
 for i_ in (WIN, LOS): T[i_].add(TC)
@@ -532,6 +575,7 @@ STARS = [(random.uniform(-1.6, 1.6), random.uniform(0.08, 1.2), random.uniform(0
 CLOUDS = [[random.uniform(-1.6, 1.6), random.uniform(0.12, 0.7), random.uniform(40, 90)] for _ in range(9)]
 try:
     FONT = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 46)
+    FONTKO = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 120)
 except OSError:
     FONT = ImageFont.load_default()
 
@@ -705,7 +749,7 @@ for f in range(int(DUR*FPS/SLOW)):
             pos = prevsk[j][idx] if isinstance(idx, int) else prevsk[j][0] + (prevsk[j][1] - prevsk[j][0])*idx
             fxp, fh, fz = pos[0], max(0, pos[1]), FZ[j]
         s, kind = e["s"], e["kind"]
-        att_ = (1 - e["victim"]) if (e["victim"] is not None and kind in ("hit", "block", "parry")) else None
+        att_ = (1 - e["victim"]) if (e["victim"] is not None and kind in ("hit", "block", "parry", "finisher")) else None
         acol = COL[att_] if att_ is not None else None
         if kind not in ("dust", "whoosh"):
             shake = max(shake, s*9); flash = max(flash, min(1, s/3.2))
@@ -721,6 +765,12 @@ for f in range(int(DUR*FPS/SLOW)):
             for _ in range(6):
                 sparks.append([fxp, fh, fz, random.uniform(-9, 9), random.uniform(-2, 2), 0, 0.6, (200, 200, 220)])
         if kind in ("land", "clash", "hit") and s >= 1: rings.append([fxp, fh, 0.0, s, kind == "land", acol or (255, 255, 255)])
+        if kind == "finisher":   # coup final : tout explose à la fois
+            for kk_ in ("star", "dome", "pillar", "bolts"):
+                IMPACTS.append(dict(x=fxp, h=fh, z=fz, col=acol, age=0.0, s=s, kind=kk_, seed=random.random()))
+            for k_ in range(3): rings.append([fxp, fh, -k_*2.5, 5, False, acol])
+            rings.append([fxp, 0, 0.0, 6, True, acol]); crater(fxp, 110, fz); debris(fxp, 0, fz, 30, 0, 2.0, 0.0, (8, 24))
+            inv_t = f; flash = 1.0; shake = max(shake, 26)
         if kind in ("clash", "boom", "hit", "block"): lines_t = f; lines_col = acol or (255, 255, 255); lines_pos = (fxp, fh, fz)
         if acol:   # un effet spectaculaire différent à chaque impact
             IMPK += 1
@@ -1083,6 +1133,14 @@ for f in range(int(DUR*FPS/SLOW)):
             dr.ellipse([hx-r_, hy2-r_, hx+r_, hy2+r_], fill=c_)
 
     for i in range(2):
+        for k0_, k1_, ki_ in KOS:   # K.O. : étoiles qui tournent au-dessus de la tête
+            if ki_ == i and k0_ <= ta < k1_:
+                hd_ = sk[i][3]
+                for k_ in range(4):
+                    an = ta*5 + k_*1.57; ps = proj((hd_[0] + math.cos(an)*24, hd_[1] + 18, st[i]["z"] + math.sin(an)*24))
+                    if ps:
+                        r_ = 7*fpx/ps[2]
+                        for dr in (gd, d): dr.polygon([(ps[0], ps[1]-r_), (ps[0]+r_*0.3, ps[1]-r_*0.3), (ps[0]+r_, ps[1]), (ps[0]+r_*0.3, ps[1]+r_*0.3), (ps[0], ps[1]+r_), (ps[0]-r_*0.3, ps[1]+r_*0.3), (ps[0]-r_, ps[1]), (ps[0]-r_*0.3, ps[1]-r_*0.3)], fill=(255, 230, 90))
         if st[i]["name"] == "dazed":
             hd_ = sk[i][3]
             for k_ in range(3):
@@ -1326,6 +1384,14 @@ for f in range(int(DUR*FPS/SLOW)):
 
     dk = 0.55*float(np.clip((t - DK0)/(BEAM["t0"] - 0.1 - DK0), 0, 1)) if t < BEAM["tb"] else 0.55*max(0.35, 1 - (t - BEAM["tb"])/1.2)
     if t < DK0: dk = 0.0
+    for t_ko, a_ko in KO_TXT:   # « K.O. » qui claque à la couleur du vainqueur
+        u_ = (ta - t_ko)/1.4
+        if 0 <= u_ < 1:
+            al = min(1, u_*6, (1 - u_)*4); sc_ = 1.0 + 0.6*max(0, 0.15 - u_)/0.15
+            ft = FONTKO if sc_ < 1.05 else ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(120*sc_))
+            c_ = COL[a_ko]
+            d.text((W/2, H*0.22), "K.O.", font=ft, anchor="mm", fill=tuple(int(v*al + 20*(1 - al)) for v in mix(c_, (255, 255, 255), 0.35)),
+                   stroke_width=6, stroke_fill=tuple(int(v*0.25*al) for v in c_))
     arr = np.asarray(img, np.float32)*(1 - dk) + np.asarray(glow.filter(ImageFilter.GaussianBlur(10)), np.float32)*0.9 \
           + np.asarray(glow, np.float32)*0.25
     arr = arr*vign + flash*150*(flash_col/255.0)
@@ -1334,4 +1400,4 @@ for f in range(int(DUR*FPS/SLOW)):
     ff.stdin.write(np.clip(arr, 0, 255).astype(np.uint8).tobytes())
 
 ff.stdin.close(); ff.wait()
-print("groupes", len(groups), "ralentis", [round(r[0], 1) for r in RAMPS], "rage/décor", [round(x, 1) for x in THEME_T])
+print("échanges", ex, "K.O.", len(KOS), "groupes", len(groups), "ralentis", [round(r[0], 1) for r in RAMPS], "rage/décor", [round(x, 1) for x in THEME_T])
