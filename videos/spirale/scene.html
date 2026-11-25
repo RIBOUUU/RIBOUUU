@@ -74,7 +74,7 @@ for (let i = 0; i < N; i++) {
 // les deux autres s'arretent dans le vide.
 const LANES = [ { dr: -1.5, dy: 0.0 }, { dr: 0.0, dy: -1.7 }, { dr: 1.5, dy: -3.4 } ];
 const FORK_LEN = 6;                                    // nb de notes pendant lesquelles les pistes coexistent
-const FORKS = [ { at: 6, choice: 2 }, { at: 22, choice: 0 }, { at: 38, choice: 1 } ].filter(f => f.at + FORK_LEN < N);
+const FORKS = [];   // embranchements desactives (ex. : [{ at: 6, choice: 2 }, { at: 22, choice: 0 }])
 const baseLand = land.map(l => ({ ...l }));
 const decoys = [];                                     // {i, p} blocs leurres
 {
@@ -240,10 +240,10 @@ for (let u = 0.04, j = 0; u < 1; u += 0.08, j++) {
 // ---------- bille ----------
 function planetTex() {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256; const g = c.getContext('2d');
-  g.fillStyle = '#3fd9c8'; g.fillRect(0, 0, 512, 256);
+  g.fillStyle = '#c8c8c8'; g.fillRect(0, 0, 512, 256);   // texture neutre, teintee par la couleur de la bille
   let s = 3; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
   for (let k = 0; k < 70; k++) {
-    g.fillStyle = rnd() > 0.5 ? 'rgba(120,255,200,0.55)' : 'rgba(30,140,170,0.5)';
+    g.fillStyle = rnd() > 0.5 ? 'rgba(255,255,255,0.6)' : 'rgba(90,90,90,0.5)';
     g.beginPath(); g.ellipse(rnd()*512, rnd()*256, 10+rnd()*45, 6+rnd()*22, rnd()*3, 0, 7); g.fill();
   }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
@@ -257,6 +257,22 @@ const halo = new THREE.Mesh(new THREE.SphereGeometry(BR * 1.25, 32, 16),
   new THREE.MeshBasicMaterial({ color: 0x7ffff0, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false }));
 ball.add(halo);
 const ballLight = new THREE.PointLight(0x5cffd8, 6, 5, 1.6); ballPivot.add(ballLight);
+// couleur de la bille : change tous les 10 notes (avec un flash)
+const BALL_COLORS = ['#3fe0d0', '#ff4fa3', '#ffb02e', '#8f6bff', '#7dff5a', '#ff5a3c'].map(c => new THREE.Color(c));
+function updateBallColor(t) {
+  const i = t < HITS[0].t ? 0 : hopIndex(t), k = segOf(i);
+  const tCut = HITS[Math.min(k * SEG, N - 1)].t, u = t - tCut;
+  const cur = BALL_COLORS[k % BALL_COLORS.length], prev = BALL_COLORS[(k + BALL_COLORS.length - 1) % BALL_COLORS.length];
+  const c = k > 0 && u < 0.15 ? prev.clone().lerp(cur, u / 0.15) : cur.clone();
+  const flash = k > 0 ? Math.exp(-Math.max(u, 0) / 0.12) : 0;
+  ball.material.color.copy(c);
+  ball.material.emissive.copy(c).lerp(new THREE.Color(1, 1, 1), flash * 0.6);
+  ball.material.emissiveIntensity = 1.25 + 2.5 * flash;
+  halo.material.color.copy(c);
+  halo.scale.setScalar(1 + 0.8 * flash);
+  ballLight.color.copy(c);
+  ballLight.intensity = 6 + 10 * flash;
+}
 
 // ---------- trajectoire : physique reelle, vitesse horizontale constante ----------
 const P = l => onSpiral(l.a, l.y, l.r);
@@ -354,6 +370,7 @@ function renderAt(t) {
   ballPivot.position.copy(p);
   ball.rotation.set(t * 2.1, -t * 3.3, 0);
   halo.material.opacity = 0.10 + 0.04 * Math.sin(t * 9);
+  updateBallColor(t);
 
   // ecrasement a l'impact (style "ecrase")
   ballPivot.scale.set(1, 1, 1);
