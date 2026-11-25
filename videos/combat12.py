@@ -241,11 +241,12 @@ def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False,
     rest, hrest, prest = ("fly", hv, NONE) if air else ("stance", 0, BOTH)
     sk = lambda f_: ({"dspin": spin*f_} if spin else {})
     Ta.add(ts)
+    r0 = round(sa["rot"]/360)*360   # l'attaquant se remet toujours tête en haut avant de frapper
     if chase:
-        Ta.add(ts + (ti - ts)*0.6, pose="dash" if far else wp, x=sa["x"] + (xa_imp - sa["x"])*0.75, h=sa["h"] + (hv - sa["h"])*0.7, plant=NONE, ease="in", **sk(0.3))
+        Ta.add(ts + (ti - ts)*0.6, pose="dash" if far else wp, x=sa["x"] + (xa_imp - sa["x"])*0.75, h=sa["h"] + (hv - sa["h"])*0.7, rot=r0, plant=NONE, ease="in", **sk(0.3))
         Ta.add(ti, pose=sp, x=xa_imp, h=hv, plant=NONE, ease="out", **sk(0.7))
     else:
-        Ta.add(ts + wu*0.6, pose=wp, x=sa["x"] - Fa*3 + (xa_imp - sa["x"])*0.2, plant=plant, ease="out", **sk(0.3))
+        Ta.add(ts + wu*0.6, pose=wp, x=sa["x"] - Fa*3 + (xa_imp - sa["x"])*0.2, rot=r0, plant=plant, ease="out", **sk(0.3))
         Ta.add(ti, pose=sp, x=xa_imp, plant=plant, ease="in", **sk(0.7))
     if outc in ("hit", "block") and m != "throw":
         Ta.add(ti + 0.14, pose=sp, x=xa_imp + Fa*6, h=hv, ease="out")
