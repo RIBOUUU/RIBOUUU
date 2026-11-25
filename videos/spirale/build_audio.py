@@ -6,19 +6,33 @@ import json, wave
 import numpy as np
 
 SR = 44100
-UNIT = 0.32          # duree d'une croche (s) : meme cadence que l'original
-T0 = 1.2             # premier impact (apres l'arrivee sur le rail)
-OUTRO = 1.4          # sortie sur le rail apres la derniere note
+T0 = 0.06            # premier impact quasi immediat : on entend le son des la 1re image
+OUTRO = 1.6          # sortie sur le rail apres la derniere note
 
-# (note, duree en croches) - transpose une octave au-dessus pour un timbre brillant
-MELODY = [
+# Theme en croches (note, duree en croches) - octave brillante
+THEME = [
     ("B4",1),("C#5",1),("D5",1),("E5",1),("F#5",1),("D5",1),("F#5",2),
     ("F5",1),("C#5",1),("F5",2),
     ("E5",1),("C5",1),("E5",2),
     ("B4",1),("C#5",1),("D5",1),("E5",1),("F#5",1),("D5",1),("F#5",1),
-    ("B5",1),("A5",1),("F#5",1),("D5",1),("F#5",1),("A5",4),
+    ("B5",1),("A5",1),("F#5",1),("D5",1),("F#5",1),("A5",2),
 ]
+# Structure de Grieg : le theme revient, change de ton, et accelere jusqu'au final.
+# (transposition en demi-tons, duree d'une croche en secondes)
+SECTIONS = [(0, 0.32), (0, 0.30), (-5, 0.28), (-5, 0.26), (0, 0.23), (0, 0.20), (0, 0.17)]
+FINALE = [("B5",1,0.17),("F#5",1,0.17),("D5",1,0.17),("B4",1,0.17),("F#4",2,0.20),("B4",5,0.30)]
+
+def midi_of(n):
+    return 12 * (int(n[-1]) + 1) + NAMES[n[:-1]]
+NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
+def name_of(m):
+    return NOTE_NAMES[m % 12] + str(m // 12 - 1)
 NAMES = {"C":0,"C#":1,"D":2,"D#":3,"E":4,"F":5,"F#":6,"G":7,"G#":8,"A":9,"A#":10,"B":11}
+
+SEQ = []   # (note, duree en secondes)
+for tr, unit in SECTIONS:
+    SEQ += [(name_of(midi_of(n) + tr), d * unit) for n, d in THEME]
+SEQ += [(n, d * u) for n, d, u in FINALE]
 
 def freq(n):
     name, octv = n[:-1], int(n[-1])
@@ -27,9 +41,9 @@ def freq(n):
 
 # --- timeline ---
 hits, t = [], T0
-for n, d in MELODY:
-    hits.append({"t": round(t, 4), "note": n, "dur": round(d * UNIT, 4)})
-    t += d * UNIT
+for n, d in SEQ:
+    hits.append({"t": round(t, 4), "note": n, "dur": round(d, 4)})
+    t += d
 end = hits[-1]["t"] + hits[-1]["dur"] + OUTRO
 json.dump({"hits": hits, "end": round(end, 3), "t0": T0}, open("timeline.json", "w"), indent=1)
 
@@ -64,7 +78,6 @@ def roll(t1, t2, gain=0.05):
     nz = np.convolve(nz, k, mode="same")
     env = np.sin(np.linspace(0, np.pi, b - a)) ** 0.5
     L[a:b] += nz * env * gain; R[a:b] += nz * env * gain
-roll(0.0, T0 - 0.35)
 roll(hits[-1]["t"] + hits[-1]["dur"], end)
 
 # reverb : convolution avec une reponse impulsionnelle synthetique

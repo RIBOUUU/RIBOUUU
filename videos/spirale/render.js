@@ -1,5 +1,5 @@
 // Rend scene.html image par image (Chromium headless) -> frames/NNNN.jpg
-// Usage : node render.js [fps] [w] [h] [t1,t2,...]   (liste de temps = apercu)
+// Usage : node render.js [fps] [w] [h] [t1,t2,... | debut-fin]  (liste de temps = apercu, debut-fin = tranche d'images)
 const http = require('http'), fs = require('fs'), path = require('path');
 const { chromium } = require('playwright');
 const [fps = 30, w = 1080, h = 1920, only] = process.argv.slice(2);
@@ -15,12 +15,16 @@ const srv = http.createServer((q, r) => {
   await page.goto(`http://localhost:${port}/scene.html?capture&w=${w}&h=${h}`);
   await page.waitForFunction('window.READY === true', null, { timeout: 120000 });
   const end = await page.evaluate('window.END');
-  const out = path.join(__dirname, only ? 'preview' : 'frames'); fs.mkdirSync(out, { recursive: true });
-  const times = only ? only.split(',').map(Number) : [...Array(Math.ceil(end * fps)).keys()].map(i => i / fps);
+  const range = only && only.includes('-') ? only.split('-').map(Number) : null;
+  const preview = only && !range;
+  const out = path.join(__dirname, preview ? 'preview' : 'frames'); fs.mkdirSync(out, { recursive: true });
+  const nAll = Math.ceil(end * fps);
+  const idx = preview ? null : [...Array(nAll).keys()].filter(i => !range || (i >= range[0] && i < range[1]));
+  const times = preview ? only.split(',').map(Number) : idx.map(i => i / fps);
   const t0 = Date.now();
   for (let i = 0; i < times.length; i++) {
     const url = await page.evaluate(t => window.renderAt(t), times[i]);
-    fs.writeFileSync(path.join(out, only ? `t${times[i]}.jpg` : String(i).padStart(4, '0') + '.jpg'), Buffer.from(url.split(',')[1], 'base64'));
+    fs.writeFileSync(path.join(out, preview ? `t${times[i]}.jpg` : String(idx[i]).padStart(4, '0') + '.jpg'), Buffer.from(url.split(',')[1], 'base64'));
     if (i % 30 === 0) console.log(`${i}/${times.length}  ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   }
   await browser.close(); srv.close();
