@@ -641,6 +641,28 @@ def break_pillars(x, rad, push=0.0):
             debris(p["x"], p["h"]*0.45, zc, nb, push, 1.2)
             sparks.extend([[p["x"], random.uniform(0, p["h"]), (p["z0"] + p["z1"])/2, push*0.5 + random.uniform(-4, 4), random.uniform(0, 6), random.uniform(-2, 2), 1.0, (150, 130, 110)] for _ in range(25)])
 
+# ---------- barres de vie : dégâts calculés à partir des coups ----------
+DMG = []
+for e in FX:
+    v = e["victim"]
+    if v is None or e["t"] >= TF: continue
+    if e["kind"] == "hit": DMG.append((e["t"], v, 4 + 3*e["s"]))
+    elif e["kind"] == "finisher": DMG.append((e["t"], v, 16))
+    elif e["kind"] == "block": DMG.append((e["t"], v, 1.0))
+for pj in PROJ:
+    if not pj["miss"]: DMG.append((pj["t1"], pj["d"], 2.0))
+for i_ in range(2):   # personne ne tombe à zéro avant la finale
+    tot = sum(x[2] for x in DMG if x[1] == i_)
+    if tot > 82: DMG = [(a_, b_, c_*82/tot) if b_ == i_ else (a_, b_, c_) for a_, b_, c_ in DMG]
+DMG.append((TF + 1.0, LOS, 1000))   # le rayon final vide la barre
+def hp_at(i_, ta_): return max(0.0, 100 - sum(c_ for a_, b_, c_ in DMG if b_ == i_ and a_ <= ta_))
+def hit_recent(i_, ta_): return any(b_ == i_ and 0 <= ta_ - a_ < 0.25 for a_, b_, c_ in DMG)
+try:
+    FONTHUD = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+except OSError:
+    FONTHUD = ImageFont.load_default()
+trail_hp = [100.0, 100.0]
+
 ff = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
                        "-r", str(FPS), "-i", "-", "-ss", str(START), "-t", str(DUR), "-i", AUDIO, "-af", f"atempo={SLOW}",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-c:a", "aac", "-shortest", OUT],
@@ -1397,7 +1419,24 @@ for f in range(int(DUR*FPS/SLOW)):
     arr = arr*vign + flash*150*(flash_col/255.0)
     if f - inv_t == 0: arr = 255 - np.clip(arr, 0, 255)
     if sh is not None: arr[:70] = 0; arr[-70:] = 0
-    ff.stdin.write(np.clip(arr, 0, 255).astype(np.uint8).tobytes())
+    hud = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)); hd = ImageDraw.Draw(hud)
+    BW, BH, BY = 226, 18, 26
+    for i_ in range(2):
+        hp_ = hp_at(i_, ta); trail_hp[i_] = max(hp_, trail_hp[i_] - 0.9*max(spd, 0.3)) if trail_hp[i_] > hp_ else hp_
+        x0 = 16 if i_ == 0 else W - 16 - BW
+        hd.rectangle([x0 - 3, BY - 3, x0 + BW + 3, BY + BH + 3], fill=(15, 12, 18))
+        hd.rectangle([x0, BY, x0 + BW, BY + BH], fill=(55, 30, 30))
+        def span(v_): w_ = int(BW*v_/100); return (x0, x0 + w_) if i_ == 0 else (x0 + BW - w_, x0 + BW)
+        a0_, a1_ = span(trail_hp[i_])
+        if a1_ > a0_: hd.rectangle([a0_, BY, a1_, BY + BH], fill=(255, 235, 150))          # dégâts récents qui s'effacent
+        b0_, b1_ = span(hp_)
+        col_ = (255, 255, 255) if hit_recent(i_, ta) else (COL[i_] if hp_ > 25 else (255, 70, 50) if int(t*8) % 2 else COL[i_])
+        if b1_ > b0_:
+            hd.rectangle([b0_, BY, b1_, BY + BH], fill=col_); hd.rectangle([b0_, BY, b1_, BY + 5], fill=tuple(min(255, v + 70) for v in col_))
+        hd.text((x0 + (2 if i_ == 0 else BW - 2), BY + BH + 6), ("BLEU" if i_ == 0 else "ROUGE"), font=FONTHUD,
+                anchor="la" if i_ == 0 else "ra", fill=COL[i_], stroke_width=2, stroke_fill=(10, 10, 14))
+    hd.text((W/2, BY + BH/2), "VS", font=FONTHUD, anchor="mm", fill=(255, 255, 255), stroke_width=2, stroke_fill=(10, 10, 14))
+    ff.stdin.write(np.asarray(hud).tobytes())
 
 ff.stdin.close(); ff.wait()
 print("échanges", ex, "K.O.", len(KOS), "groupes", len(groups), "ralentis", [round(r[0], 1) for r in RAMPS], "rage/décor", [round(x, 1) for x in THEME_T])
