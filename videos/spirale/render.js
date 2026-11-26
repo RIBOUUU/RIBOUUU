@@ -20,7 +20,8 @@ const srv = http.createServer((q, r) => {
   const out = path.join(__dirname, preview ? 'preview' : 'frames'); fs.mkdirSync(out, { recursive: true });
   const nAll = Math.ceil(end * fps - 1e-6);
   const idx = preview ? null : [...Array(nAll).keys()].filter(i => !range || (i >= range[0] && i < range[1]));
-  const times = preview ? only.split(',').map(Number) : idx.map(i => i / fps);
+  const off = await page.evaluate('window.OFF || 0');
+  const times = preview ? only.split(',').map(Number) : idx.map(i => off + i / fps);
   const t0 = Date.now();
   for (let i = 0; i < times.length; i++) {
     const url = await page.evaluate(t => window.renderAt(t), times[i]);

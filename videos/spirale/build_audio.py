@@ -16,7 +16,7 @@ Durees en croches ; chaque section = (transposition en demi-tons, duree d'une cr
 import json, sys, wave
 import numpy as np
 
-SR = 44100
+SR = 48000         # 48 kHz : une boucle de 608 images = 950 paquets AAC de 1024 echantillons pile
 T0 = 0.06            # premier impact quasi immediat : on entend le son des la 1re image
 OUTRO = 1.6          # sortie sur le rail apres la derniere note
 
@@ -43,7 +43,7 @@ SONGS = {
     # Version BOUCLE du swing : tempo constant, relance a la fin qui ramene au debut sans coupure.
     # 27 + 27 + 6 = 60 notes = 6 segments de 10 (les 6 styles font un tour complet).
     "slapstick_boucle": dict(
-        timbre="xylo", swing=True, loop=True, loop_seconds=20.0,
+        timbre="xylo", swing=True, loop=True, loop_seconds=608 / 30,
         theme=None,   # reprend le theme de "slapstick" (voir plus bas)
         sections=[(0, 1), (0, 1)],
         finale=[("A4+A2",1,1),("C#5",1,1),("E5+A2",1,1),("G5",1,1),("F5+A2",1,1),("E5",1,1)],
@@ -108,7 +108,10 @@ for n, d in SEQ:
     hits.append({"t": round(t, 4), "note": n, "dur": round(d, 4)})
     t += d
 end = song["loop_seconds"] if LOOP else hits[-1]["t"] + hits[-1]["dur"] + OUTRO
-json.dump({"song": song_name, "loop": LOOP, "hits": hits, "end": round(end, 4), "t0": T0}, open("timeline.json", "w"), indent=1)
+# boucle : la video et le son demarrent entre la 5e et la 6e note (milieu de phrase, temps faible),
+# pour que le raccord ne tombe ni sur une coupe ni sur le debut du theme
+OFFSET = round((hits[4]["t"] + hits[5]["t"]) / 2, 4) if LOOP else 0.0
+json.dump({"song": song_name, "loop": LOOP, "offset": OFFSET, "hits": hits, "end": round(end, 4), "t0": T0}, open("timeline.json", "w"), indent=1)
 
 # --- synthese ---
 total = int((end + (4.5 if LOOP else 0.6)) * SR)
@@ -176,6 +179,8 @@ if LOOP:   # boucle : la queue du son (resonance + reverb) se replie sur le debu
         tail = ch[n:].copy()
         ch[:len(tail)] += tail
     L, Rch = L[:n], Rch[:n]
+    k0 = int(round(OFFSET * SR))
+    L, Rch = np.roll(L, -k0), np.roll(Rch, -k0)
 m = max(np.abs(L).max(), np.abs(Rch).max())
 st = (np.stack([L, Rch], 1) / m * 0.89 * 32767).astype(np.int16)
 w = wave.open("audio.wav", "wb"); w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR)
