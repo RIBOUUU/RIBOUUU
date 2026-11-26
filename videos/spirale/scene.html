@@ -71,11 +71,18 @@ for (let i = 0; i < N; i++) {
   const T = !LOOP && i === N - 1 ? 0.45 : HITS[i].dur, fs = fallStyle(i);
   let dy = -fs.slope * T;
   let vy = (dy + fs.g * T * T / 2) / T;
-  const vmax = Math.sqrt(2 * fs.g * APEX_MAX);
-  if (vy > vmax) { vy = vmax; dy = vy * T - fs.g * T * T / 2; }   // note longue : chute plus profonde
+  let g = fs.g;
+  if (vy * vy / (2 * g) > APEX_MAX) {   // note longue : la bille flotte (gravite reduite) au lieu de plonger
+    let lo = 0.5, hi = g;
+    for (let it = 0; it < 40; it++) {
+      const gm = (lo + hi) / 2, v = (dy + gm * T * T / 2) / T;
+      if (v > 0 && v * v / (2 * gm) > APEX_MAX) hi = gm; else lo = gm;
+    }
+    g = lo; vy = (dy + g * T * T / 2) / T;
+  }
   const nextZig = i + 1 < N ? fallStyle(i + 1).zig || 0 : 0;
   const r = R + (nextZig ? ((IDX(i + 1)) % 2 ? nextZig : -nextZig) : 0);
-  hops.push({ T, g: fs.g, vy });
+  hops.push({ T, g, vy });
   const p = land[i];
   land.push({ a: p.a - V * T / R, y: p.y + dy, r });
 }
@@ -328,7 +335,8 @@ composer.addPass(new OutputPass());
 const ease = x => x * x * (3 - 2 * x);
 // ---------- camera : un plan different tous les 10 notes (coupe franche) ----------
 const UP = new THREE.Vector3(0, 1, 0);
-const SHOTS = ['suivi', 'plongee', 'contre-plongee', 'poursuite', 'balayage', 'penche'];
+// une seule camera : vue exterieure calme qui suit la bille (les autres plans restent dispo si besoin)
+const SHOTS = ['suivi'];   // autres plans : 'plongee', 'contre-plongee', 'poursuite', 'balayage', 'penche'
 function updateCamera(t) {
   const iSeg = t < HITS[0].t ? 0 : hopIndex(Math.min(t, HITS[N - 1].t));
   const k = segOf(iSeg), shot = SHOTS[k % SHOTS.length];
@@ -343,11 +351,10 @@ function updateCamera(t) {
   const fk = !LOOP && t >= HITS[0].t ? inFork(hopIndex(t)) : null;
   if (LOOP) {                                         // boucle : un seul plan-sequence, periodique sur la boucle
     const ph = 2 * Math.PI * t / TL.end;
-    const phi = a + 0.65 + 0.45 * Math.sin(ph);
-    const rc = 14 + 3 * Math.sin(2 * ph + 0.5), hc = 7 + 3.5 * Math.sin(ph + 1.3);
+    const phi = a + 0.6 + 0.08 * Math.sin(ph);        // camera stable : seulement une tres legere respiration
+    const rc = 15.5 + 0.5 * Math.sin(ph + 0.5), hc = 7.8 + 0.5 * Math.sin(ph + 1.3);
     pos = new THREE.Vector3(rc * Math.cos(phi), sb.y + hc, rc * Math.sin(phi));
     target = new THREE.Vector3(look.x * 0.8, look.y - 1.6, look.z * 0.8);
-    roll = 0.15 * Math.sin(3 * ph);
   } else if (fk) {                                           // plan large de suspense : on voit les 3 pistes
     const uf = t - HITS[fk.at - 1].t;
     const ahead = smoothBall(t + 0.55, 0.3, 9);
@@ -384,7 +391,7 @@ function updateCamera(t) {
     roll = 0.42 * (k % 2 ? 1 : -1);
     fov = 48;
   }
-  if (!fk && !LOOP) fov -= 8 * Math.exp(-u / 0.18);                     // petit "punch" de zoom a chaque coupe
+  if (!fk && !LOOP && SHOTS.length > 1) fov -= 8 * Math.exp(-u / 0.18);                     // petit "punch" de zoom a chaque coupe
   if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
   camera.position.copy(pos);
   camera.lookAt(target);
