@@ -8,6 +8,8 @@ Morceaux :
   lyoko    : compo originale, electro sombre (dans l'esprit de Code Lyoko)
   slapstick_boucle : le swing en boucle parfaite (20 s, la fin s'enchaine sur le debut)
   domino_valse : compo originale, valse mysterieuse au kalimba, en boucle (video domino.html)
+  mecanismes   : la meme valse, mais le timbre change tous les 10 notes avec le mecanisme
+                 (bois, steel drum, verre, carillon de cles, clic de ciseaux, sable) (video mecanismes.html)
 Les trois dernieres sont des melodies ORIGINALES qui reprennent seulement un style
 (tempo, gamme, rythme, instrument), pas les generiques eux-memes.
 
@@ -84,6 +86,12 @@ SONGS = {
         sections=[(0, 1)],
         finale=[],
     ),
+    "mecanismes": dict(
+        timbre="kalimba", swing=False, loop=True, loop_seconds=608 / 30,
+        theme=None, sections=[(0, 1)], finale=[],
+        # un timbre par mecanisme, dans le meme ordre que MECHS dans mecanismes.html
+        seg_timbres=["kalimba", "steeldrum", "glock", "chime", "snip", "sand"],
+    ),
     "lyoko": dict(
         timbre="synth", swing=False,
         theme=[("A4+A2",1),("C5",1),("E5",1),("A5",1),("G5+A2",1),("E5",1),("C5",1),("E5",1),
@@ -103,6 +111,7 @@ freq = lambda n: 440.0 * 2 ** ((midi_of(n) - 69) / 12)
 transpose = lambda chord, tr: "+".join(name_of(midi_of(n) + tr) for n in chord.split("+"))
 
 SONGS["slapstick_boucle"]["theme"] = SONGS["slapstick"]["theme"]
+SONGS["mecanismes"]["theme"] = SONGS["domino_valse"]["theme"]
 song_name = sys.argv[1] if len(sys.argv) > 1 else "grieg"
 song = SONGS[song_name]
 LOOP = song.get("loop", False)
@@ -163,6 +172,29 @@ def strike(f, timbre):
         s = (sin(f, tt) * np.exp(-tt/0.9) + 0.22 * sin(2.0*f, tt) * np.exp(-tt/0.35)
              + 0.18 * sin(5.9*f, tt) * np.exp(-tt/0.05))
         click = 0.45
+    elif timbre == "steeldrum": # canette / steel drum : partiels harmoniques, un peu metallique
+        s = (sin(f, tt) * np.exp(-tt/0.6) + 0.5 * sin(2.0*f, tt) * np.exp(-tt/0.35)
+             + 0.25 * sin(3.0*f, tt) * np.exp(-tt/0.18) + 0.12 * sin(4.2*f, tt) * np.exp(-tt/0.08))
+        click = 0.2
+    elif timbre == "chime":     # cles : carillon + petit tintement de trousseau
+        s = (sin(f, tt) * np.exp(-tt/1.2) + 0.5 * sin(2.76*f, tt) * np.exp(-tt/0.5)
+             + 0.3 * sin(5.4*f, tt) * np.exp(-tt/0.15))
+        jingle = np.zeros_like(tt)
+        for d0 in (0.0, 0.035, 0.075):
+            k0 = int(d0 * SR); hp = np.diff(rng.normal(0, 1, len(tt) + 1))
+            jingle[k0:] += (hp[:len(tt) - k0] * np.exp(-tt[:len(tt) - k0] / 0.012)) * 0.12
+        s = s + jingle
+        click = 0.05
+    elif timbre == "snip":      # ciseaux : pince seche + "clic" metallique aigu
+        hp = np.diff(rng.normal(0, 1, len(tt) + 1))
+        s = (sin(f, tt) * np.exp(-tt/0.3) + 0.4 * sin(3.0*f, tt) * np.exp(-tt/0.08)
+             + hp * np.exp(-tt/0.015) * 0.35)
+        click = 0.1
+    elif timbre == "sand":      # sable : note douce + souffle de shaker
+        hp = np.diff(rng.normal(0, 1, len(tt) + 1))
+        sh = hp * np.minimum(1, tt / 0.03) * np.exp(-tt/0.12) * 0.22
+        s = (sin(f, tt) * np.exp(-tt/0.7) + 0.2 * sin(3.93*f, tt) * np.exp(-tt/0.1)) * 0.9 + sh
+        click = 0.05
     else:                       # synth : dent de scie filtree qui se ferme (pluck electro)
         s = np.zeros_like(tt)
         for k in range(1, 14):
@@ -178,7 +210,8 @@ for i, h in enumerate(hits):
     for j, n in enumerate(h["note"].split("+")):
         f = freq(n)
         gain = 1.2 if j == 0 else (0.75 if f < 200 else 0.5)    # melodie devant, basse/accord derriere
-        s = strike(f, song["timbre"]) * gain
+        tb = song["seg_timbres"][(i // 10) % len(song["seg_timbres"])] if song.get("seg_timbres") else song["timbre"]
+        s = strike(f, tb) * gain
         pan = 0.5 + 0.25 * np.sin(i * 0.9) if j == 0 else 0.5
         k = min(len(s), total - a)
         L[a:a+k] += s[:k] * (1 - pan); Rch[a:a+k] += s[:k] * pan

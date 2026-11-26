@@ -1,0 +1,357 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Spirale de mecanismes</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// =====================================================================
+// REACTION EN CHAINE DE MECANISMES : chaque objet est pousse par le
+// precedent et chaque choc joue une note. Tous les 10 notes, le mecanisme
+// change : dominos -> cylindres -> boules -> cles -> ciseaux -> sable.
+// La vague avance a vitesse constante : l'ecart entre deux objets = V x
+// duree de la note (note longue = grand ecart = objet plus grand).
+// Chaque objet a son "dos" a l'abscisse S[i] : c'est la qu'il est touche.
+// =====================================================================
+const params = new URLSearchParams(location.search);
+const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
+const TL = await (await fetch('timeline.json')).json();
+
+const LOOP = !!TL.loop, N0 = TL.hits.length, KX = LOOP ? N0 : 0;
+const HITS = [];
+for (let j = -KX; j < N0 + KX; j++) {
+  const m = ((j % N0) + N0) % N0, rep = Math.floor(j / N0);
+  HITS.push({ ...TL.hits[m], t: TL.hits[m].t + rep * TL.end });
+}
+const N = HITS.length;
+const IDX = j => LOOP ? (((j - KX) % N0) + N0) % N0 : j;
+const WQ = w => LOOP ? Math.max(1, Math.round(w * TL.end / (2 * Math.PI))) * 2 * Math.PI / TL.end : w;
+const SEG = 10;
+const segOf = i => Math.floor(IDX(i) / SEG);
+const segStartT = i => HITS[Math.max(0, i - (IDX(i) % SEG))].t;
+function hopIndex(t) {
+  let lo = 0, hi = N - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (HITS[m].t <= t) lo = m; else hi = m - 1; }
+  return lo;
+}
+const tH = i => HITS[i].t, tN = i => i + 1 < N ? HITS[i + 1].t : HITS[i].t + HITS[i].dur;
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const ease = x => x * x * (3 - 2 * x);
+
+// --- mecanismes (meme ordre que seg_timbres dans build_audio.py) ---
+const MECHS = ['domino', 'cylindre', 'boule', 'cle', 'ciseaux', 'sable'];
+const NEON = { domino: '#ffd21a', cylindre: '#8fd0ff', boule: '#ff3d8b', cle: '#ffb02e', ciseaux: '#3dff8a', sable: '#b56cff' };
+const mechOf = i => MECHS[segOf(i) % MECHS.length];
+
+// --- geometrie de la rampe ---
+const R = 5.0, V = 3.6, SLOPE = 0.28, RW = 1.0;
+const S = HITS.map(h => V * (h.t - HITS[0].t));
+const GAP = S.map((s, i) => i + 1 < N ? S[i + 1] - s : S[i] - S[i - 1]);
+const angOf = s => -s / R, yOf = s => -SLOPE * s;
+const onPath = (s, h = 0, dr = 0) => { const a = angOf(s); return new THREE.Vector3((R + dr) * Math.cos(a), yOf(s) + h, (R + dr) * Math.sin(a)); };
+
+// ---------- renderer / decor ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xb9b4d4, 13, 46);
+const camera = new THREE.PerspectiveCamera(52, W / H, 0.1, 200);
+const sky = new THREE.Mesh(new THREE.SphereGeometry(100, 48, 24), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `varying vec3 vP; void main(){
+    float warm = smoothstep(-0.6, 1.0, dot(normalize(vP.xz+1e-4), normalize(vec2(1.,-.4))));
+    vec3 c = mix(vec3(.55,.60,.78), vec3(.98,.76,.68), warm*0.85);
+    c = mix(c, vec3(.88,.87,.95), smoothstep(0.1, 0.9, vP.y));
+    c = mix(c, vec3(.42,.42,.58), smoothstep(-0.1, -0.9, vP.y));
+    gl_FragColor = vec4(c,1.); }`
+}));
+scene.add(sky);
+scene.add(new THREE.HemisphereLight(0xd6d6ff, 0x5a5070, 0.9));
+const sun = new THREE.DirectionalLight(0xffc4a2, 2.2);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 10, bottom: -10, near: 0.5, far: 45 });
+sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
+scene.add(sun, sun.target);
+const UP = new THREE.Vector3(0, 1, 0), SUN_OFF = new THREE.Vector3(10, 14, -6);
+
+const sMin = S[0] - 8, sMax = S[N - 1] + 8;
+const column = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, (yOf(sMin) - yOf(sMax)) + 80, 64),
+  new THREE.MeshStandardMaterial({ color: 0xe9e6f2, roughness: 0.9 }));
+column.position.y = (yOf(sMin) + yOf(sMax)) / 2; column.receiveShadow = true; scene.add(column);
+const wireMat = new THREE.MeshStandardMaterial({ color: 0x55555e, metalness: 0.8, roughness: 0.4 });
+{
+  const PS = LOOP ? V * TL.end : 1e9, fit = st => LOOP ? PS / Math.round(PS / st) : st;
+  const sAt = st => S[KX] - st * Math.ceil((S[KX] - sMin) / st);
+  const pos = [], idx = [], TK = 0.18; let n = 0;
+  for (let s = sAt(fit(0.2)); s <= sMax; s += fit(0.2), n++) {
+    for (const [dr, dy] of [[-RW, 0], [RW, 0], [RW, -TK], [-RW, -TK]]) { const p = onPath(s, dy, dr); pos.push(p.x, p.y, p.z); }
+    if (n > 0) { const b = (n - 1) * 4, c = n * 4; for (const [u, v] of [[0, 1], [1, 2], [2, 3], [3, 0]]) idx.push(b + u, c + u, b + v, b + v, c + u, c + v); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+  const ramp = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xd8d4e6, roughness: 0.8, side: THREE.DoubleSide }));
+  ramp.receiveShadow = true; ramp.castShadow = true; scene.add(ramp);
+  for (let s = sAt(fit(3.2)); s <= sMax; s += fit(3.2)) {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 5), wireMat); w.position.copy(onPath(s, 15, RW - 0.1)); scene.add(w);
+  }
+}
+
+// ---------- chiffres 7 segments (une tuile par note, sur le bord de la rampe) ----------
+const SEGS = { 0:'abcdef',1:'bc',2:'abged',3:'abgcd',4:'fgbc',5:'afgcd',6:'afgedc',7:'abc',8:'abcdefg',9:'abcfgd' };
+function segPaths(ctx, s, x0, y0, w, h, t) {
+  const m = { a:[x0+t,y0,w-2*t,t], d:[x0+t,y0+h-t,w-2*t,t], g:[x0+t,y0+h/2-t/2,w-2*t,t],
+    f:[x0,y0+t,t,h/2-t*1.5], b:[x0+w-t,y0+t,t,h/2-t*1.5], e:[x0,y0+h/2+t/2,t,h/2-t*1.5], c:[x0+w-t,y0+h/2+t/2,t,h/2-t*1.5] };
+  for (const k of s) { const [x,y,ww,hh] = m[k]; ctx.beginPath(); ctx.roundRect(x,y,ww,hh,t*0.45); ctx.fill(); }
+}
+const texCache = {};
+function digitTex(d, neon) {
+  const key = d + (neon || 'off'); if (texCache[key]) return texCache[key];
+  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
+  if (neon) { g.strokeStyle = neon; g.lineWidth = 16; g.strokeRect(8, 8, 240, 240); g.fillStyle = neon; segPaths(g, SEGS[d], 70, 42, 116, 172, 22); }
+  else { g.fillStyle = '#151518'; g.fillRect(0, 0, 256, 256); g.fillStyle = '#26262c'; segPaths(g, SEGS[8], 70, 42, 116, 172, 22); g.fillStyle = '#34343c'; segPaths(g, SEGS[d], 70, 42, 116, 172, 22); }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return (texCache[key] = t);
+}
+const glowMat = neon => new THREE.MeshBasicMaterial({ color: new THREE.Color(neon), transparent: true, opacity: 0, toneMapped: false, blending: THREE.AdditiveBlending, depthWrite: false });
+
+// repere local d'un objet : x = sens de la chaine, y = haut, z = vers l'exterieur
+function frameAt(s) { const g = new THREE.Group(); g.position.copy(onPath(s)); g.rotation.y = Math.PI / 2 - angOf(s); scene.add(g); return g; }
+
+const items = [];          // { i, mech, update(t, glow) }
+const tiles = [];
+for (let i = 0; i < N; i++) {
+  const mech = mechOf(i), neon = NEON[mech], gap = GAP[i];
+  // tuile du chiffre (bord exterieur de la rampe)
+  const tf = frameAt(S[i] + 0.25), d = (IDX(i) + 1) % 10, tg = new THREE.PlaneGeometry(0.42, 0.42);
+  const toff = new THREE.Mesh(tg, new THREE.MeshBasicMaterial({ map: digitTex(d, null) })); toff.position.set(0, 0.05, RW + 0.02); tf.add(toff);
+  const tonM = new THREE.MeshBasicMaterial({ map: digitTex(d, neon), transparent: true, opacity: 0, toneMapped: false, blending: THREE.AdditiveBlending, depthWrite: false });
+  const ton = new THREE.Mesh(tg, tonM); ton.position.set(0, 0.05, RW + 0.03); tf.add(ton);
+  tiles.push({ i, m: tonM });
+
+  const it = { i, mech };
+  if (mech === 'domino' || mech === 'cylindre') {
+    // --- objets qui basculent (anti-traversee : voir topple plus bas) ---
+    const th = mech === 'domino' ? 0.2 : 0.5, reach = gap - th;
+    let h = Math.min(5, Math.max(1.0, reach / Math.sin(0.7))); if (reach > 0.93 * h) h = reach / 0.93;
+    Object.assign(it, { topple: true, th, h, thc: Math.asin(clamp(reach / h, 0.02, 0.97)) });
+    const pivot = frameAt(S[i] + th), tilt = new THREE.Group(); pivot.add(tilt);
+    const mat = mech === 'domino'
+      ? new THREE.MeshStandardMaterial({ color: 0x18181c, roughness: 0.5, metalness: 0.2 })
+      : new THREE.MeshStandardMaterial({ color: 0xc4ccd6, roughness: 0.35, metalness: 0.35 });
+    const body = mech === 'domino' ? new THREE.Mesh(new THREE.BoxGeometry(th, h, 1.2), mat) : new THREE.Mesh(new THREE.CylinderGeometry(th / 2, th / 2, h, 28), mat);
+    body.position.set(-th / 2, h / 2, 0); body.castShadow = true; body.receiveShadow = true; tilt.add(body);
+    const rim = new THREE.Mesh(mech === 'domino' ? new THREE.BoxGeometry(th * 1.05, 0.05, 1.22) : new THREE.CylinderGeometry(th / 2 * 1.04, th / 2 * 1.04, 0.08, 28), glowMat(neon));
+    rim.position.set(-th / 2, h - 0.03, 0); tilt.add(rim);
+    if (mech === 'cylindre') { const band = new THREE.Mesh(new THREE.CylinderGeometry(th / 2 * 1.02, th / 2 * 1.02, 0.12, 28), glowMat(neon)); band.position.set(-th / 2, h * 0.5, 0); tilt.add(band); it.band = band; }
+    it.tilt = tilt; it.rim = rim;
+    it.update = (t, glow) => { rim.material.opacity = 0.2 + 0.8 * glow; if (it.band) it.band.material.opacity = 0.9 * glow; };
+  } else if (mech === 'boule') {
+    // --- boule qui roule jusqu'a l'objet suivant puis s'arrete (elle lui donne son elan) ---
+    const rb = clamp(gap * 0.2, 0.22, Math.min(0.45, gap * 0.4)), travel = gap - 2 * rb;
+    const mat = new THREE.MeshStandardMaterial({ color: 0xe2336b, roughness: 0.15, metalness: 0.1, emissive: new THREE.Color(neon), emissiveIntensity: 0 });
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(rb, 32, 20), mat); ball.castShadow = true;
+    const holder = new THREE.Group(); holder.add(ball); scene.add(holder);
+    const stripe = new THREE.Mesh(new THREE.TorusGeometry(rb * 1.005, rb * 0.08, 8, 32), glowMat(neon)); ball.add(stripe);
+    it.update = (t, glow) => {
+      const k = t < tH(i) ? 0 : clamp((t - tH(i)) / (tN(i) - tH(i)), 0, 1);
+      const s = S[i] + rb + travel * k;
+      holder.position.copy(onPath(s, rb)); holder.rotation.y = Math.PI / 2 - angOf(s);
+      ball.rotation.z = -(travel * k) / rb;
+      mat.emissiveIntensity = 1.5 * glow; stripe.material.opacity = 0.3 + 0.7 * glow;
+    };
+  } else if (mech === 'cle') {
+    // --- cle suspendue qui se balance et frappe l'objet suivant (carillon) ---
+    const reach = gap - 0.15;
+    let L = Math.min(5, Math.max(1.3, reach / Math.sin(0.95))); if (reach > 0.95 * L) L = reach / 0.95;
+    const phc = Math.asin(clamp(reach / L, 0.02, 0.97));
+    const pivot = frameAt(S[i] + 0.1); pivot.position.y += L + 0.2;
+    const swing = new THREE.Group(); pivot.add(swing);
+    const brass = new THREE.MeshStandardMaterial({ color: 0xd4a640, metalness: 1, roughness: 0.3, emissive: new THREE.Color(neon), emissiveIntensity: 0 });
+    const bow = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.06, 10, 28), brass); bow.position.y = -0.26; swing.add(bow);
+    const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.09, L - 0.5, 0.06), brass); shaft.position.y = -0.46 - (L - 0.5) / 2; swing.add(shaft);
+    for (let k = 0; k < 3; k++) { const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.14 + 0.05 * (k % 2), 0.1, 0.06), brass); tooth.position.set(0.1, -L + 0.12 + k * 0.16, 0); swing.add(tooth); }
+    for (const m of swing.children) m.castShadow = true;
+    const hook = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.015, 6, 16), wireMat); swing.add(hook);
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 5), wireMat); w.position.y = 15; pivot.add(w);
+    const gl = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.025, 8, 28), glowMat(neon)); gl.position.y = -0.26; swing.add(gl);
+    it.update = (t, glow) => {
+      let ph = 0;
+      if (t >= tH(i) && t < tN(i)) ph = phc * Math.sin((t - tH(i)) / (tN(i) - tH(i)) * Math.PI / 2);
+      else if (t >= tN(i)) { const tau = t - tN(i); ph = phc * Math.cos(tau * Math.PI / 0.6) * Math.exp(-tau / 0.9); }
+      swing.rotation.z = ph; brass.emissiveIntensity = 0.8 * glow; gl.material.opacity = glow;
+    };
+  } else if (mech === 'ciseaux') {
+    // --- mecanisme en ciseaux (pantographe) qui se deplie et pousse l'objet suivant ---
+    const n = gap > 2.5 ? 4 : gap > 1.2 ? 3 : 2, eC = gap - 0.12, e0 = Math.min(0.15 * n, eC * 0.5);
+    const l = (eC / n) * 1.07, yc = l / 2 + 0.2;
+    const f = frameAt(S[i]);
+    const steel = new THREE.MeshStandardMaterial({ color: 0xc8ccd4, metalness: 1, roughness: 0.25 });
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, yc, 0.3), steel); post.position.set(0.04, yc / 2, 0); post.castShadow = true; f.add(post);
+    const barGeo = new THREE.BoxGeometry(1, 0.07, 0.04), bars = [];
+    for (let k = 0; k < 2 * n; k++) { const b = new THREE.Mesh(barGeo, steel); b.castShadow = true; f.add(b); bars.push(b); }
+    const jointM = glowMat(neon), joints = [];
+    for (let k = 0; k < 2 * (n + 1); k++) { const j = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), jointM); f.add(j); joints.push(j); }
+    const pad = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.4, 0.4), steel); f.add(pad);
+    const setBar = (b, x0, y0, x1, y1, z) => { b.position.set((x0 + x1) / 2, (y0 + y1) / 2, z); b.rotation.z = Math.atan2(y1 - y0, x1 - x0); b.scale.x = Math.hypot(x1 - x0, y1 - y0); };
+    it.update = (t, glow) => {
+      let e = e0;
+      if (t >= tH(i) && t < tN(i)) e = e0 + (eC - e0) * Math.pow((t - tH(i)) / (tN(i) - tH(i)), 1.4);
+      else if (t >= tN(i)) { const tau = t - tN(i) - 0.15; e = tau < 0 ? eC : eC + (e0 - eC) * ease(clamp(tau / 0.5, 0, 1)); }
+      const c = e / n, hh = Math.sqrt(Math.max(0.0001, l * l - c * c));
+      for (let k = 0; k < n; k++) {
+        const x0 = 0.1 + k * c, x1 = x0 + c;
+        setBar(bars[2 * k], x0, yc + hh / 2, x1, yc - hh / 2, 0.05);
+        setBar(bars[2 * k + 1], x0, yc - hh / 2, x1, yc + hh / 2, -0.05);
+      }
+      for (let k = 0; k <= n; k++) { joints[2 * k].position.set(0.1 + k * c, yc + hh / 2, 0); joints[2 * k + 1].position.set(0.1 + k * c, yc - hh / 2, 0); }
+      pad.position.set(0.1 + e, yc, 0);
+      jointM.opacity = 0.25 + 0.75 * glow;
+    };
+  } else {
+    // --- gobelet de sable qui bascule et verse son sable dans l'objet suivant ---
+    const rc = Math.min(0.32, gap * 0.4), cupH = 0.5, Hc = 0.7;
+    Object.assign(it, { sand: true, rc, cupH, Hc });
+    const f = frameAt(S[i]);
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, Hc, 8), wireMat); post.position.set(rc, Hc / 2, 0); f.add(post);
+    const hinge = new THREE.Group(); hinge.position.set(2 * rc, Hc, 0); f.add(hinge);
+    const cupMat = new THREE.MeshStandardMaterial({ color: 0xf2eee8, roughness: 0.5, side: THREE.DoubleSide, emissive: new THREE.Color(neon), emissiveIntensity: 0 });
+    const prof = [new THREE.Vector2(0.001, 0), new THREE.Vector2(rc * 0.8, 0), new THREE.Vector2(rc, cupH)];
+    const cup = new THREE.Mesh(new THREE.LatheGeometry(prof, 28), cupMat); cup.position.set(-rc, 0, 0); cup.castShadow = true; hinge.add(cup);
+    const fill = new THREE.Mesh(new THREE.CircleGeometry(rc * 0.95, 24), new THREE.MeshStandardMaterial({ color: 0xe8c27a, roughness: 1 }));
+    fill.rotation.x = -Math.PI / 2; fill.position.set(-rc, cupH * 0.85, 0); hinge.add(fill);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(rc, 0.03, 8, 28), glowMat(neon)); ring.rotation.x = Math.PI / 2; ring.position.set(-rc, cupH, 0); hinge.add(ring);
+    it.update = (t, glow) => {
+      const a = t < tH(i) ? 0 : 1.9 * ease(clamp((t - tH(i)) / 0.25, 0, 1));
+      hinge.rotation.z = -a; fill.visible = t < tH(i) + 0.12;
+      cupMat.emissiveIntensity = 0.2 * glow; ring.material.opacity = 0.2 + 0.8 * glow;
+    };
+  }
+  items.push(it);
+}
+
+// --- anti-traversee des objets qui basculent : chacun s'appuie sur la face arriere du suivant ---
+function limitAng(i, thj) {
+  const a = items[i], b = items[i + 1];
+  const pi = S[i] + a.th, pj = S[i + 1] + b.th, gy = -SLOPE * (pj - pi);
+  const ok = th => {
+    const cx = pi + a.h * Math.sin(th), cy = a.h * Math.cos(th);
+    const bx = pj - b.th * Math.cos(thj), by = gy + b.th * Math.sin(thj);
+    return (cx - bx) * -Math.cos(thj) + (cy - by) * Math.sin(thj) >= -1e-4;
+  };
+  if (ok(Math.PI / 2)) return Math.PI / 2;
+  let lo = 0, hi = Math.PI / 2;
+  for (let k = 0; k < 24; k++) { const m = (lo + hi) / 2; if (ok(m)) lo = m; else hi = m; }
+  return lo;
+}
+const ANG = new Float64Array(N);
+function topple(t) {
+  for (let i = N - 1; i >= 0; i--) {
+    const it = items[i]; if (!it.topple) continue;
+    let f = 0;
+    if (t >= tH(i)) f = Math.min(Math.PI / 2, it.thc * Math.pow((t - tH(i)) / (tN(i) - tH(i)), 1.7));
+    const nx = items[i + 1];
+    if (nx && nx.topple) f = Math.min(f, limitAng(i, ANG[i + 1]));
+    else if (nx && nx.mech !== 'boule') f = Math.min(f, it.thc);   // s'appuie sur l'objet suivant (qui ne s'en va pas)
+    ANG[i] = f; it.tilt.rotation.z = -f;
+  }
+}
+
+// --- grains de sable (particules) ---
+const SAND_M = 90, cups = items.filter(it => it.sand);
+const sandMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(0.035, 5, 3), new THREE.MeshStandardMaterial({ color: 0xe8c27a, roughness: 1, emissive: 0x4a3410 }), cups.length * SAND_M);
+sandMesh.castShadow = true; sandMesh.frustumCulled = false; scene.add(sandMesh);
+const hash = x => { const s = Math.sin(x * 127.1) * 43758.5453; return s - Math.floor(s); };
+const M4 = new THREE.Matrix4(), ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
+function updateSand(t) {
+  cups.forEach((it, ci) => {
+    const i = it.i, T = Math.max(0.08, tN(i) - tH(i) - 0.08), E = Math.min(0.4, 0.7 * (tN(i) - tH(i)));
+    const s0 = S[i] + 2 * it.rc + 0.42, h0 = it.Hc - 0.1;
+    const nx = items[i + 1];
+    const s1 = nx && nx.sand ? S[i + 1] + nx.rc : S[i + 1] + 0.1, h1 = nx && nx.sand ? nx.Hc + nx.cupH : 0.7;
+    const y0 = yOf(s0) + h0, y1 = yOf(s1) + h1, g = 8, vy = (y1 - y0 + g * T * T / 2) / T;
+    for (let j = 0; j < SAND_M; j++) {
+      const te = tH(i) + 0.08 + E * j / SAND_M, tau = t - te, id = ci * SAND_M + j;
+      if (tau < 0 || tau > T) { sandMesh.setMatrixAt(id, ZERO); continue; }
+      const k = tau / T, s = s0 + (s1 - s0) * k + (hash(id) - 0.5) * 0.1;
+      const p = onPath(s, 0, (hash(id + 7) - 0.5) * 0.18);
+      p.y = y0 + vy * tau - g * tau * tau / 2 + (hash(id + 3) - 0.5) * 0.06;
+      M4.makeTranslation(p.x, p.y, p.z); sandMesh.setMatrixAt(id, M4);
+    }
+  });
+  sandMesh.instanceMatrix.needsUpdate = true;
+}
+
+const waveLight = new THREE.PointLight(0xffffff, 8, 6, 1.6); scene.add(waveLight);
+function wavePos(t) {
+  const i = Math.min(N - 2, Math.max(0, hopIndex(t))), k = clamp((t - HITS[i].t) / (HITS[i + 1].t - HITS[i].t), 0, 1);
+  return onPath(S[i] + (S[i + 1] - S[i]) * k, 1.2);
+}
+function smoothWave(t, win = 0.45, n = 13) {
+  const v = new THREE.Vector3();
+  for (let k = 0; k < n; k++) v.add(wavePos(t + (k / (n - 1) - 0.5) * 2 * win));
+  return v.divideScalar(n);
+}
+
+// ---------- camera : un plan different tous les 10 notes (sans vue a la premiere personne) ----------
+const SHOTS = ['suivi', 'plongee', 'contre-plongee', 'balayage', 'penche'];
+function updateCamera(t) {
+  const iSeg = hopIndex(t), k = segOf(iSeg), shot = SHOTS[k % SHOTS.length];
+  const u = Math.max(0, t - segStartT(iSeg));
+  const sb = smoothWave(t), look = smoothWave(t + 0.25, 0.35, 9);
+  const a = Math.atan2(sb.z, sb.x);
+  const rad = new THREE.Vector3(Math.cos(a), 0, Math.sin(a)), fwd = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a));
+  const at = (base, r, f, y) => base.clone().addScaledVector(rad, r).addScaledVector(fwd, f).addScaledVector(UP, y);
+  camera.up.set(0, 1, 0);
+  let pos, target, roll = 0, fov = 52;
+  if (shot === 'suivi') {
+    const phi = a + 0.55 + 0.15 * Math.sin(t * WQ(0.35));
+    const rc = 13 + Math.sin(t * WQ(0.42) + 0.6), hc = 5.8 + Math.sin(t * WQ(0.31) + 1.2);
+    pos = new THREE.Vector3(rc * Math.cos(phi), sb.y + hc, rc * Math.sin(phi));
+    target = new THREE.Vector3(look.x * 0.85, look.y - 1.0, look.z * 0.85);
+  } else if (shot === 'plongee') {
+    pos = at(sb, 6.5, -2, 8.0 - u * 0.5); target = at(look, 0, 0.8, -0.6); roll = u * 0.6;
+  } else if (shot === 'contre-plongee') {
+    pos = at(sb, 5.5 - u * 0.3, 3.0, -0.5); target = at(look, 0, -0.5, 0.6); roll = -0.15; fov = 58;
+  } else if (shot === 'balayage') {
+    const th = 1.3 * Math.sin(u * 1.7);
+    pos = at(sb, 7 * Math.cos(th), 7 * Math.sin(th), 2.4 + 1.1 * Math.sin(u * 1.1)); target = at(look, 0, 0, -0.5);
+  } else {
+    pos = at(sb, 7.5, -1.5 + u * 1.1, 1.0); target = at(look, 0, 0, -0.5); roll = 0.4 * (k % 2 ? 1 : -1); fov = 48;
+  }
+  fov -= 8 * Math.exp(-u / 0.18);
+  if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  camera.position.copy(pos); camera.lookAt(target); if (roll) camera.rotateZ(roll);
+}
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.75, 0.55, 0.82));
+composer.addPass(new OutputPass());
+
+function renderAt(t) {
+  topple(t);
+  for (const it of items) { const dt = t - tH(it.i); it.update(t, dt >= 0 ? Math.exp(-dt / 0.6) : 0); }
+  for (const tl of tiles) { const dt = t - tH(tl.i), g = dt >= 0 ? Math.exp(-dt / 0.6) : 0; tl.m.opacity = Math.min(1, g * 1.4); tl.m.color.setScalar(1 + 2.2 * g); }
+  updateSand(t);
+  const w = wavePos(t), i = hopIndex(t);
+  waveLight.position.copy(w).addScaledVector(UP, 0.8); waveLight.color.set(NEON[mechOf(i)]);
+  updateCamera(t);
+  const aB = Math.atan2(w.z, w.x);
+  sun.position.copy(w).add(SUN_OFF.clone().applyAxisAngle(UP, -aB)); sun.target.position.copy(w);
+  sky.position.copy(camera.position); sky.rotation.y = -aB;
+  composer.render();
+}
+window.renderAt = t => { renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.93); };
+window.END = TL.end;
+window.OFF = TL.offset || 0;
+window.READY = true;
+if (!params.has('capture')) { const st = performance.now(); (function loop(){ renderAt(window.OFF + ((performance.now()-st)/1000) % TL.end); requestAnimationFrame(loop); })(); }
+</script></body></html>

@@ -12,7 +12,7 @@ const srv = http.createServer((q, r) => {
   const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const page = await browser.newPage({ viewport: { width: +w, height: +h } });
   page.on('console', m => console.log('[page]', m.text())); page.on('pageerror', e => console.log('[err]', e.message));
-  await page.goto(`http://localhost:${port}/${process.env.SCENE || 'scene.html'}?capture&w=${w}&h=${h}`);
+  await page.goto(`http://localhost:${port}/${process.env.SCENE || 'scene.html'}?capture${process.env.QS || ''}&w=${w}&h=${h}`);
   await page.waitForFunction('window.READY === true', null, { timeout: 120000 });
   const end = await page.evaluate('window.END');
   const range = only && only.includes('-') ? only.split('-').map(Number) : null;
