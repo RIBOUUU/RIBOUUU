@@ -1,4 +1,4 @@
-// Rend scene.html image par image (Chromium headless) -> frames/NNNN.jpg
+// Rend scene.html (ou la page SCENE=...) image par image (Chromium headless) -> frames/NNNN.jpg
 // Usage : node render.js [fps] [w] [h] [t1,t2,... | debut-fin]  (liste de temps = apercu, debut-fin = tranche d'images)
 const http = require('http'), fs = require('fs'), path = require('path');
 const { chromium } = require('playwright');
@@ -12,7 +12,7 @@ const srv = http.createServer((q, r) => {
   const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const page = await browser.newPage({ viewport: { width: +w, height: +h } });
   page.on('console', m => console.log('[page]', m.text())); page.on('pageerror', e => console.log('[err]', e.message));
-  await page.goto(`http://localhost:${port}/scene.html?capture&w=${w}&h=${h}`);
+  await page.goto(`http://localhost:${port}/${process.env.SCENE || 'scene.html'}?capture&w=${w}&h=${h}`);
   await page.waitForFunction('window.READY === true', null, { timeout: 120000 });
   const end = await page.evaluate('window.END');
   const range = only && only.includes('-') ? only.split('-').map(Number) : null;

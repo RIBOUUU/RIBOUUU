@@ -1,0 +1,246 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Spirale de dominos</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// =====================================================================
+// REACTION EN CHAINE : chaque domino est pousse par le precedent, et
+// chaque choc joue une note. La vague avance a vitesse constante (V) :
+// l'ecart entre deux dominos = V x duree de la note. Une note longue =
+// grand ecart = domino plus grand (pour atteindre le suivant).
+// Tous les 10 notes : nouveau style de domino + nouveau plan camera.
+// =====================================================================
+const params = new URLSearchParams(location.search);
+const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
+const TL = await (await fetch('timeline.json')).json();
+
+// --- notes (prolongees avant/apres en mode boucle) ---
+const LOOP = !!TL.loop, N0 = TL.hits.length, KX = LOOP ? N0 : 0;   // un tour de boucle de chaque cote (les tours de spirale au-dessus et en dessous sont visibles)
+const HITS = [];
+for (let j = -KX; j < N0 + KX; j++) {
+  const m = ((j % N0) + N0) % N0, rep = Math.floor(j / N0);
+  HITS.push({ ...TL.hits[m], t: TL.hits[m].t + rep * TL.end });
+}
+const N = HITS.length;
+const IDX = j => LOOP ? (((j - KX) % N0) + N0) % N0 : j;
+const WQ = w => LOOP ? Math.max(1, Math.round(w * TL.end / (2 * Math.PI))) * 2 * Math.PI / TL.end : w;
+const SEG = 10;
+const segOf = i => Math.floor(IDX(i) / SEG);
+const segStartT = i => HITS[Math.max(0, i - (IDX(i) % SEG))].t;
+function hopIndex(t) {
+  let lo = 0, hi = N - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (HITS[m].t <= t) lo = m; else hi = m - 1; }
+  return lo;
+}
+
+// --- geometrie ---
+const R = 5.0, V = 3.6, SLOPE = 0.28;   // rayon, vitesse de la vague, pente de la rampe
+const TH = 0.2, DW = 1.2;               // epaisseur et largeur d'un domino
+const S = HITS.map(h => V * (h.t - HITS[0].t));        // abscisse curviligne de chaque domino
+const angOf = s => -s / R, yOf = s => -SLOPE * s;
+const onPath = (s, h = 0, dr = 0) => { const a = angOf(s); return new THREE.Vector3((R + dr) * Math.cos(a), yOf(s) + h, (R + dr) * Math.sin(a)); };
+const GAP = S.map((s, i) => i + 1 < N ? S[i + 1] - s : S[i] - S[i - 1]);
+const HGT = GAP.map(g => { let h = Math.min(5.0, Math.max(1.0, g / Math.sin(0.7))); if (g > 0.93 * h) h = g / 0.93; return h; });
+const THC = GAP.map((g, i) => Math.asin(Math.min(0.97, Math.max(0.05, (g - TH) / HGT[i]))));   // angle au contact
+const REST = 1.35;                                            // angle final (couche, appuye sur le suivant)
+
+// --- styles (changent tous les 10 notes) ---
+const STYLES = [
+  { color: 0x18181c, rough: 0.5,  metal: 0.2, neon: '#ffd21a' },
+  { color: 0x9fd6ff, rough: 0.1,  metal: 0.0, neon: '#8fd0ff', glass: true },
+  { color: 0x7a4a26, rough: 0.7,  metal: 0.0, neon: '#ff8a2a' },
+  { color: 0x2a0c16, rough: 0.4,  metal: 0.3, neon: '#ff3d8b' },
+  { color: 0x22123a, rough: 0.45, metal: 0.3, neon: '#b56cff' },
+  { color: 0xc9a227, rough: 0.28, metal: 1.0, neon: '#3dff8a' },
+];
+const styleOf = i => STYLES[segOf(i) % STYLES.length];
+
+// ---------- renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xb9b4d4, 13, 46);
+const camera = new THREE.PerspectiveCamera(52, W / H, 0.1, 200);
+
+const sky = new THREE.Mesh(new THREE.SphereGeometry(100, 48, 24), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `varying vec3 vP; void main(){
+    float warm = smoothstep(-0.6, 1.0, dot(normalize(vP.xz+1e-4), normalize(vec2(1.,-.4))));
+    vec3 c = mix(vec3(.55,.60,.78), vec3(.98,.76,.68), warm*0.85);
+    c = mix(c, vec3(.88,.87,.95), smoothstep(0.1, 0.9, vP.y));
+    c = mix(c, vec3(.42,.42,.58), smoothstep(-0.1, -0.9, vP.y));
+    gl_FragColor = vec4(c,1.); }`
+}));
+scene.add(sky);
+scene.add(new THREE.HemisphereLight(0xd6d6ff, 0x5a5070, 0.9));
+const sun = new THREE.DirectionalLight(0xffc4a2, 2.2);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 10, bottom: -10, near: 0.5, far: 45 });
+sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
+scene.add(sun, sun.target);
+const UP = new THREE.Vector3(0, 1, 0), SUN_OFF = new THREE.Vector3(10, 14, -6);
+
+const sMin = S[0] - 8, sMax = S[N - 1] + 8;
+const column = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, (yOf(sMin) - yOf(sMax)) + 80, 64),
+  new THREE.MeshStandardMaterial({ color: 0xe9e6f2, roughness: 0.9 }));
+column.position.y = (yOf(sMin) + 40 + yOf(sMax) - 40) / 2; column.receiveShadow = true; scene.add(column);
+
+// rampe en spirale (ruban avec une tranche) sur laquelle tiennent les dominos
+{
+  const pos = [], idx = [], RW = 1.0, TK = 0.18;
+  let n = 0;
+  // pas d'echantillonnage cale sur la periode de la boucle (sinon la rampe et les fils ne retombent pas pile)
+  const PS = LOOP ? V * TL.end : 1e9, fit = st => LOOP ? PS / Math.round(PS / st) : st;
+  const sAt = st => S[KX] - st * Math.ceil((S[KX] - sMin) / st);
+  const rs = fit(0.2), wsp = fit(3.2);
+  for (let s = sAt(rs); s <= sMax; s += rs, n++) {
+    for (const [dr, dy] of [[-RW, 0], [RW, 0], [RW, -TK], [-RW, -TK]]) { const p = onPath(s, dy, dr); pos.push(p.x, p.y, p.z); }
+    if (n > 0) {
+      const b = (n - 1) * 4, c = n * 4;
+      for (const [u, v] of [[0, 1], [1, 2], [2, 3], [3, 0]]) idx.push(b + u, c + u, b + v, b + v, c + u, c + v);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+  const ramp = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xd8d4e6, roughness: 0.8, side: THREE.DoubleSide }));
+  ramp.receiveShadow = true; ramp.castShadow = true; scene.add(ramp);
+  const wireMat = new THREE.MeshStandardMaterial({ color: 0x55555e, metalness: 0.8, roughness: 0.4 });
+  for (let s = sAt(wsp); s <= sMax; s += wsp) {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 5), wireMat);
+    w.position.copy(onPath(s, 15, RW - 0.1)); scene.add(w);
+  }
+}
+
+// ---------- chiffres 7 segments ----------
+const SEGS = { 0:'abcdef',1:'bc',2:'abged',3:'abgcd',4:'fgbc',5:'afgcd',6:'afgedc',7:'abc',8:'abcdefg',9:'abcfgd' };
+function segPaths(ctx, s, x0, y0, w, h, t) {
+  const m = { a:[x0+t,y0,w-2*t,t], d:[x0+t,y0+h-t,w-2*t,t], g:[x0+t,y0+h/2-t/2,w-2*t,t],
+    f:[x0,y0+t,t,h/2-t*1.5], b:[x0+w-t,y0+t,t,h/2-t*1.5], e:[x0,y0+h/2+t/2,t,h/2-t*1.5], c:[x0+w-t,y0+h/2+t/2,t,h/2-t*1.5] };
+  for (const k of s) { const [x,y,ww,hh] = m[k]; ctx.beginPath(); ctx.roundRect(x,y,ww,hh,t*0.45); ctx.fill(); }
+}
+const texCache = {};
+function digitTex(d, neon) {
+  const key = d + (neon || 'off'); if (texCache[key]) return texCache[key];
+  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
+  if (neon) { g.strokeStyle = neon; g.lineWidth = 16; g.strokeRect(8, 8, 240, 240); g.fillStyle = neon; segPaths(g, SEGS[d], 70, 42, 116, 172, 22); }
+  else { g.fillStyle = '#151518'; g.fillRect(0, 0, 256, 256); g.fillStyle = '#26262c'; segPaths(g, SEGS[8], 70, 42, 116, 172, 22); g.fillStyle = '#34343c'; segPaths(g, SEGS[d], 70, 42, 116, 172, 22); }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return (texCache[key] = t);
+}
+
+// ---------- dominos ----------
+const mats = STYLES.map(s => new THREE.MeshStandardMaterial({ color: s.color, roughness: s.rough, metalness: s.metal,
+  transparent: !!s.glass, opacity: s.glass ? 0.6 : 1, emissive: s.glass ? 0x203850 : 0x000000 }));
+const dominos = [];
+for (let i = 0; i < N; i++) {
+  const st = styleOf(i), h = HGT[i];
+  const pivot = new THREE.Group();                       // arete avant-basse : axe de basculement
+  const sp = S[i] + TH, a = angOf(sp);
+  pivot.position.copy(onPath(sp));
+  pivot.rotation.y = Math.PI / 2 - a;                    // x local = sens de la chaine, z local = vers l'exterieur
+  const tilt = new THREE.Group(); pivot.add(tilt);
+  const box = new THREE.Mesh(new THREE.BoxGeometry(TH, h, DW), mats[STYLES.indexOf(st)]);
+  box.position.set(-TH / 2, h / 2, 0); box.castShadow = true; box.receiveShadow = !st.glass; tilt.add(box);
+  const d = (IDX(i) + 1) % 10, fs = Math.min(DW * 0.8, h * 0.8);
+  const fg = new THREE.PlaneGeometry(fs, fs);
+  const off = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({ map: digitTex(d, null) }));
+  off.position.set(-TH - 0.003, h * 0.5, 0); off.rotation.y = -Math.PI / 2; tilt.add(off);
+  const onMat = new THREE.MeshBasicMaterial({ map: digitTex(d, st.neon), transparent: true, opacity: 0, toneMapped: false, blending: THREE.AdditiveBlending, depthWrite: false });
+  const on = new THREE.Mesh(fg, onMat); on.position.set(-TH - 0.006, h * 0.5, 0); on.rotation.y = -Math.PI / 2; tilt.add(on);
+  const edgeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(st.neon), transparent: true, opacity: 0, toneMapped: false, blending: THREE.AdditiveBlending, depthWrite: false });
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(TH * 1.05, 0.05, DW * 1.02), edgeMat); edge.position.set(-TH / 2, h, 0); tilt.add(edge);
+  scene.add(pivot);
+  dominos.push({ tilt, onMat, edgeMat, i });
+}
+function angleAt(i, t) {
+  const t0 = HITS[i].t, t1 = i + 1 < N ? HITS[i + 1].t : t0 + HITS[i].dur;
+  if (t < t0) return 0;
+  if (t < t1) { const k = (t - t0) / (t1 - t0); return THC[i] * Math.pow(k, 1.7); }   // chute qui accelere
+  const k = Math.min(1, (t - t1) / 0.4);
+  return THC[i] + (REST - THC[i]) * (1 - Math.pow(1 - k, 2));                         // finit couche sur le suivant
+}
+
+// lumiere qui suit la vague
+const waveLight = new THREE.PointLight(0xffffff, 8, 6, 1.6); scene.add(waveLight);
+
+// point suivi par la camera : la "vague" qui avance a vitesse constante
+function wavePos(t) {
+  const i = Math.min(N - 2, Math.max(0, hopIndex(t))), k = Math.min(1, Math.max(0, (t - HITS[i].t) / (HITS[i + 1].t - HITS[i].t)));
+  const s = S[i] + (S[i + 1] - S[i]) * k;
+  return onPath(s, 1.2);
+}
+function smoothWave(t, win = 0.45, n = 13) {
+  const v = new THREE.Vector3();
+  for (let k = 0; k < n; k++) v.add(wavePos(t + (k / (n - 1) - 0.5) * 2 * win));
+  return v.divideScalar(n);
+}
+
+// ---------- camera : un plan different tous les 10 notes (sans vue a la premiere personne) ----------
+const SHOTS = ['suivi', 'plongee', 'contre-plongee', 'balayage', 'penche'];
+const ease = x => x * x * (3 - 2 * x);
+function updateCamera(t) {
+  const iSeg = hopIndex(t), k = segOf(iSeg), shot = SHOTS[k % SHOTS.length];
+  const u = Math.max(0, t - segStartT(iSeg));
+  const sb = smoothWave(t), look = smoothWave(t + 0.25, 0.35, 9);
+  const a = Math.atan2(sb.z, sb.x);
+  const rad = new THREE.Vector3(Math.cos(a), 0, Math.sin(a)), fwd = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a));
+  const at = (base, r, f, y) => base.clone().addScaledVector(rad, r).addScaledVector(fwd, f).addScaledVector(UP, y);
+  camera.up.set(0, 1, 0);
+  let pos, target, roll = 0, fov = 52;
+  if (shot === 'suivi') {
+    const phi = a + 0.55 + 0.15 * Math.sin(t * WQ(0.35));
+    const rc = 14.5 + Math.sin(t * WQ(0.42) + 0.6), hc = 6.5 + Math.sin(t * WQ(0.31) + 1.2);
+    pos = new THREE.Vector3(rc * Math.cos(phi), sb.y + hc, rc * Math.sin(phi));
+    target = new THREE.Vector3(look.x * 0.85, look.y - 1.2, look.z * 0.85);
+  } else if (shot === 'plongee') {
+    pos = at(sb, 6.5, -2, 8.5 - u * 0.5); target = at(look, 0, 0.8, -0.5); roll = u * 0.6;
+  } else if (shot === 'contre-plongee') {
+    pos = at(sb, 6.0 - u * 0.3, 3.0, -0.6); target = at(look, 0, -0.5, 0.8); roll = -0.15; fov = 58;
+  } else if (shot === 'balayage') {
+    const th = 1.3 * Math.sin(u * 1.7);
+    pos = at(sb, 8 * Math.cos(th), 8 * Math.sin(th), 2.6 + 1.2 * Math.sin(u * 1.1)); target = at(look, 0, 0, -0.4);
+  } else {
+    pos = at(sb, 8.5, -1.5 + u * 1.1, 1.2); target = at(look, 0, 0, -0.4); roll = 0.4 * (k % 2 ? 1 : -1); fov = 48;
+  }
+  fov -= 8 * Math.exp(-u / 0.18);
+  if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  camera.position.copy(pos); camera.lookAt(target); if (roll) camera.rotateZ(roll);
+}
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.75, 0.55, 0.82));
+composer.addPass(new OutputPass());
+
+function renderAt(t) {
+  for (const d of dominos) {
+    d.tilt.rotation.z = -angleAt(d.i, t);
+    const dt = t - HITS[d.i].t, glow = dt >= 0 ? Math.exp(-dt / 0.6) : 0;
+    d.onMat.opacity = Math.min(1, glow * 1.4); d.onMat.color.setScalar(1 + 2.2 * glow);
+    d.edgeMat.opacity = 0.9 * glow;
+  }
+  const w = wavePos(t), i = hopIndex(t);
+  waveLight.position.copy(w).addScaledVector(UP, 0.8);
+  waveLight.color.set(styleOf(i).neon);
+  updateCamera(t);
+  const aB = Math.atan2(w.z, w.x);
+  sun.position.copy(w).add(SUN_OFF.clone().applyAxisAngle(UP, -aB)); sun.target.position.copy(w);
+  sky.position.copy(camera.position); sky.rotation.y = -aB;
+  composer.render();
+}
+window.renderAt = t => { renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.93); };
+window.END = TL.end;
+window.OFF = TL.offset || 0;
+window.READY = true;
+if (!params.has('capture')) { const st = performance.now(); (function loop(){ renderAt(window.OFF + ((performance.now()-st)/1000) % TL.end); requestAnimationFrame(loop); })(); }
+</script></body></html>

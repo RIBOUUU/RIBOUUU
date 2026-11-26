@@ -7,6 +7,7 @@ Morceaux :
   heroine  : compo originale, pop heroique (dans l'esprit de Miraculous)
   lyoko    : compo originale, electro sombre (dans l'esprit de Code Lyoko)
   slapstick_boucle : le swing en boucle parfaite (20 s, la fin s'enchaine sur le debut)
+  domino_valse : compo originale, valse mysterieuse au kalimba, en boucle (video domino.html)
 Les trois dernieres sont des melodies ORIGINALES qui reprennent seulement un style
 (tempo, gamme, rythme, instrument), pas les generiques eux-memes.
 
@@ -59,6 +60,30 @@ SONGS = {
         finale=[("B5",1,0.15),("G#5",1,0.15),("E5",1,0.15),("B4",1,0.15),("D#5",1,0.18),("E5+E3+B3",5,0.30)],
     ),
     # Electro sombre en la mineur : arpeges continus de synthe, basse sur chaque mesure.
+    # Valse mysterieuse en mi mineur (3/4), au kalimba : A A' B A + relance = 60 notes, en boucle.
+    # Une basse sur le 1er temps de chaque mesure (6 croches).
+    "domino_valse": dict(
+        timbre="kalimba", swing=False, loop=True, loop_seconds=608 / 30,
+        theme=[
+            # A
+            ("E5+E3",2),("G5",1),("B5",1),("E6+B2",2),("D#6",2),("B5",2),("F#5",2),
+            ("G5+E3",2),("A5",1),("G5",1),("F#5+B2",2),("E5",4),("B4",2),
+            # A'
+            ("E5+E3",2),("G5",1),("B5",1),("E6+B2",2),("F#6",2),("E6",2),("B5",2),
+            ("C6+C3",2),("B5",1),("A5",1),("F#5+D3",2),("G5",4),("B4",2),
+            # B
+            ("C6+A2",2),("B5",1),("A5",1),("E5",2),("A5+C3",2),("G5",2),("E5",2),
+            ("F#5+B2",2),("E5",1),("D#5",1),("F#5",2),("B4+B2",6),
+            # A
+            ("E5+E3",2),("G5",1),("B5",1),("E6+B2",2),("D#6",2),("B5",2),("F#5",2),
+            ("G5+E3",2),("A5",1),("G5",1),("F#5+B2",2),("E5",4),("B4",2),
+            # relance (ramene au debut)
+            ("B4+B2",2),("D#5",2),("F#5",2),("A5+B2",2),("G5",2),("F#5",2),
+            ("E5+E3",2),("D#5",2),("B4+B2",8),
+        ],
+        sections=[(0, 1)],
+        finale=[],
+    ),
     "lyoko": dict(
         timbre="synth", swing=False,
         theme=[("A4+A2",1),("C5",1),("E5",1),("A5",1),("G5+A2",1),("E5",1),("C5",1),("E5",1),
@@ -134,6 +159,10 @@ def strike(f, timbre):
         s = (sin(f, tt) * np.exp(-tt/1.1) + 0.35 * sin(2.76*f, tt) * np.exp(-tt/0.5)
              + 0.2 * sin(5.4*f, tt) * np.exp(-tt/0.2) + 0.08 * sin(8.93*f, tt) * np.exp(-tt/0.08))
         click = 0.1
+    elif timbre == "kalimba":   # lame metallique pincee + petit "clac" de domino
+        s = (sin(f, tt) * np.exp(-tt/0.9) + 0.22 * sin(2.0*f, tt) * np.exp(-tt/0.35)
+             + 0.18 * sin(5.9*f, tt) * np.exp(-tt/0.05))
+        click = 0.45
     else:                       # synth : dent de scie filtree qui se ferme (pluck electro)
         s = np.zeros_like(tt)
         for k in range(1, 14):
