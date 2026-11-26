@@ -408,7 +408,9 @@ for ci, col in enumerate(COLS):
     o.data.materials.append(mat(f"poussiere_{ci}", base=(0, 0, 0), emis=col, strength=8.0))
 
 # ---------------- ocean (suit la descente : reste periodique) ----------------
-if PIRATE:
+FOND = os.environ.get("FOND") == "1"         # fond transparent : un mur d'images est ajoute au montage
+if FOND: sc.render.film_transparent = True
+if PIRATE and not FOND:
     bpy.ops.mesh.primitive_plane_add(size=900); sea = bpy.context.object
     ms = mat("ocean", base=(0.01, 0.06, 0.10), rough=0.08)
     ns = ms.node_tree; pse = ns.nodes.get("Principled BSDF")
