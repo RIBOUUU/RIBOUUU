@@ -25,8 +25,14 @@ NV = int(round(PER * FPS)); F0 = int(round(OFF * FPS))          # images video :
 
 R, V, BR, SLOPE = 5.0, 5.5, 0.28, 1.3
 RF, R0, HF, TUBE = 1.5, 0.30, 1.7, 3.4
+PIRATE = os.environ.get("THEME") == "pirate"     # theme « grande aventure en mer » (caisses, tourbillon, ocean)
 C_BUILD, C_DROP = (1.0, 0.42, 0.0), (1.0, 0.04, 0.40)            # chiffres : jaune (montee), magenta (drop)
 B_BUILD, B_DROP = (0.1, 1.0, 0.75), (1.0, 0.72, 0.08)            # bille : cyan (montee), or (drop)
+C_FUN = C_DROP
+if PIRATE:
+    C_BUILD, C_DROP = (1.0, 0.55, 0.06), (1.0, 0.07, 0.03)        # chiffres : or, puis rouge
+    B_BUILD, B_DROP = (0.55, 0.9, 1.0), (1.0, 0.68, 0.06)        # perle bleutee -> tresor en or
+    C_FUN = (0.75, 0.95, 1.0)                                    # ecume du tourbillon
 
 def P3(a, r, z): return Vector((r * math.cos(a), r * math.sin(a), z))
 def sstep(e0, e1, x):
@@ -156,10 +162,17 @@ ramp = nt.nodes.new("ShaderNodeValToRGB"); bg = nt.nodes.new("ShaderNodeBackgrou
 nt.links.new(tc.outputs["Generated"], sep.inputs[0]); nt.links.new(sep.outputs["Z"], ramp.inputs[0])
 nt.links.new(ramp.outputs[0], bg.inputs[0]); nt.links.new(bg.outputs[0], out.inputs[0])
 cr = ramp.color_ramp
-cr.elements[0].position = 0.25; cr.elements[0].color = (0.035, 0.03, 0.09, 1)
-cr.elements[1].position = 0.92; cr.elements[1].color = (0.10, 0.07, 0.22, 1)
-e = cr.elements.new(0.50); e.color = (0.95, 0.38, 0.22, 1)
-e = cr.elements.new(0.62); e.color = (0.38, 0.16, 0.34, 1)
+if PIRATE:     # coucher de soleil sur la mer : horizon dore, haut du ciel bleu profond
+    cr.elements[0].position = 0.3; cr.elements[0].color = (0.02, 0.06, 0.12, 1)
+    cr.elements[1].position = 0.95; cr.elements[1].color = (0.05, 0.10, 0.32, 1)
+    e = cr.elements.new(0.50); e.color = (1.0, 0.58, 0.22, 1)
+    e = cr.elements.new(0.56); e.color = (0.95, 0.40, 0.32, 1)
+    e = cr.elements.new(0.70); e.color = (0.25, 0.22, 0.50, 1)
+else:
+    cr.elements[0].position = 0.25; cr.elements[0].color = (0.035, 0.03, 0.09, 1)
+    cr.elements[1].position = 0.92; cr.elements[1].color = (0.10, 0.07, 0.22, 1)
+    e = cr.elements.new(0.50); e.color = (0.95, 0.38, 0.22, 1)
+    e = cr.elements.new(0.62); e.color = (0.38, 0.16, 0.34, 1)
 bg.inputs[1].default_value = 0.85
 
 sun_d = bpy.data.lights.new("soleil", 'SUN'); sun_d.energy = 2.6; sun_d.color = (1.0, 0.72, 0.55); sun_d.angle = math.radians(4)
@@ -171,8 +184,20 @@ for f in range(KF0, KF1 + 1):          # le soleil tourne avec la spirale (perio
 # ---------------- blocs ----------------
 SEG7 = {0: 'abcdef', 1: 'bc', 2: 'abged', 3: 'abgcd', 4: 'fgbc', 5: 'afgcd', 6: 'afgedc', 7: 'abc', 8: 'abcdefg', 9: 'abcfgd'}
 m_body = mat("bloc", base=(0.018, 0.018, 0.02), rough=0.3, coat=0.7)
+if PIRATE:     # bois de caisse : veines (texture d'ondes) + variations
+    nb_ = m_body.node_tree; pbb = nb_.nodes.get("Principled BSDF")
+    tco_ = nb_.nodes.new("ShaderNodeTexCoord"); wv = nb_.nodes.new("ShaderNodeTexWave")
+    wv.inputs["Scale"].default_value = 1.4; wv.inputs["Distortion"].default_value = 7.0; wv.inputs["Detail"].default_value = 4.0
+    rp = nb_.nodes.new("ShaderNodeValToRGB")
+    rp.color_ramp.elements[0].color = (0.17, 0.085, 0.035, 1); rp.color_ramp.elements[1].color = (0.34, 0.18, 0.08, 1)
+    nb_.links.new(tco_.outputs["Object"], wv.inputs["Vector"]); nb_.links.new(wv.outputs["Fac"], rp.inputs[0])
+    nb_.links.new(rp.outputs[0], pbb.inputs["Base Color"])
+    pbb.inputs["Roughness"].default_value = 0.55
+    for key in ("Coat Weight", "Clearcoat"):
+        if key in pbb.inputs: pbb.inputs[key].default_value = 0.25; break
+m_iron = mat("fer", base=(0.08, 0.075, 0.07), rough=0.45, metal=1.0)
 m_off = mat("segment_eteint", base=(0.06, 0.06, 0.065), rough=0.5)
-m_wire = mat("fil", base=(0.3, 0.3, 0.32), rough=0.3, metal=1.0)
+m_wire = mat("corde", base=(0.45, 0.33, 0.18), rough=0.9) if PIRATE else mat("fil", base=(0.3, 0.3, 0.32), rough=0.3, metal=1.0)
 m_screw = mat("vis", base=(0.8, 0.8, 0.82), rough=0.25, metal=1.0)
 
 def add_box(name, size, loc_, parent, m, bevel=0.0):
@@ -239,6 +264,9 @@ for k in (-1, 0, 1, 2):
         root = bpy.data.objects.new(f"bloc_{nm}", None); sc.collection.objects.link(root)
         root.location = Tk(P3(b["a"], rr, b["z"] - BR - BH / 2), k); root.rotation_euler = (0, 0, b["a"] + k * DA)
         add_box(f"corps_{nm}", (bl, w, BH), (0, 0, 0), root, m_body, bevel=0.04)
+        if PIRATE:     # cerclages en fer aux deux bouts de la caisse
+            for sx in (-bl / 2 + 0.28, bl / 2 - 0.42):
+                add_box(f"cerclage_{nm}", (0.12, w + 0.03, BH + 0.03), (sx, 0, 0), root, m_iron, bevel=0.01)
         for sx in (-0.85, 0.75):
             bpy.ops.mesh.primitive_cylinder_add(radius=0.045, depth=0.03, location=(sx, 0, BH / 2 + 0.01)); sw = bpy.context.object
             sw.data.materials.append(m_screw); sw.parent = root
@@ -254,8 +282,8 @@ for k in (-1, 0, 1, 2):
                 add_box(f"lisere_{nm}", (bl * 0.96, 0.04, 0.03), (0, sy * (w / 2 - 0.05), BH / 2 + 0.005), root, lit)
         wx = Tk(P3(b["a"], rr + bl / 2 - 0.15, 0), k)
         clash = any((wx.xy - fun_center(q).xy).length < RF + 0.6 for q in (k - 1, k, k + 1))
-        if i % 3 == 0 and not clash and b["kind"] == "normal":
-            bpy.ops.mesh.primitive_cylinder_add(radius=0.01, depth=30, location=(bl / 2 - 0.15, 0, BH / 2 + 15)); wi = bpy.context.object
+        if i % (6 if PIRATE else 3) == 0 and not clash and b["kind"] == "normal":
+            bpy.ops.mesh.primitive_cylinder_add(radius=0.02 if PIRATE else 0.01, depth=30, location=(bl / 2 - 0.15, 0, BH / 2 + 15)); wi = bpy.context.object
             wi.data.materials.append(m_wire); wi.parent = root
         bt = dict(b); bt["t"] = tg
         key_series(lit.node_tree.nodes.get("Principled BSDF").inputs["Emission Strength"], make_neon(bt))
@@ -327,14 +355,17 @@ def glow0(tl):
 for k in FUN_K:
     C = fun_center(k); top = FN["top"] + k * DZ; sh = k * PER
     fo = funnel_mesh(f"entonnoir_{k}"); fo.location = (C.x, C.y, top)
-    fm, ph_s, gl_s = funnel_material(f"tourbillon_{k}", C_DROP); fo.data.materials.append(fm)
+    fm, ph_s, gl_s = funnel_material(f"tourbillon_{k}", C_FUN); fo.data.materials.append(fm)
+    if PIRATE:     # eau profonde, tres brillante
+        pf = fm.node_tree.nodes.get("Principled BSDF")
+        pf.inputs["Base Color"].default_value = (0.0, 0.07, 0.13, 1); pf.inputs["Roughness"].default_value = 0.06
     def phase(t, sh=sh):
         tl = t - sh; th, _ = funnel_state(tl)
         return -4.8 * tl - 2.0 * (th - FN["arr"][0][0])
     glow = lambda t, sh=sh: glow0(t - sh)
     key_series(ph_s, phase); key_series(gl_s, glow)
     bpy.ops.mesh.primitive_torus_add(major_radius=RF + 0.35, minor_radius=0.05, location=(C.x, C.y, top))
-    ring = bpy.context.object; rm = mat(f"anneau_{k}", base=(0.05, 0.05, 0.05), emis=C_DROP, strength=3.0); ring.data.materials.append(rm)
+    ring = bpy.context.object; rm = mat(f"anneau_{k}", base=(0.05, 0.05, 0.05), emis=C_FUN, strength=3.0); ring.data.materials.append(rm)
     key_series(rm.node_tree.nodes.get("Principled BSDF").inputs["Emission Strength"], glow)
     z_top = top - HF; z_bot = FN["z_e"] + k * DZ + 0.85
     bpy.ops.mesh.primitive_cylinder_add(radius=0.42, depth=z_top - z_bot, vertices=64, end_fill_type='NOTHING',
@@ -343,7 +374,8 @@ for k in FUN_K:
     zz = z_top - 0.3
     while zz > z_bot + 0.1:
         bpy.ops.mesh.primitive_torus_add(major_radius=0.45, minor_radius=0.035, location=(C.x, C.y, zz))
-        tr_o = bpy.context.object; tm = mat(f"anneau_tube_{k}_{zz:.2f}", base=(0.05, 0.05, 0.05), emis=C_DROP, strength=0.5)
+        tr_o = bpy.context.object; tm = mat(f"anneau_tube_{k}_{zz:.2f}", base=(0.6, 0.4, 0.1) if PIRATE else (0.05, 0.05, 0.05), metal=1.0 if PIRATE else 0.0,
+                                 rough=0.3, emis=(1.0, 0.6, 0.1) if PIRATE else C_DROP, strength=0.5)
         tr_o.data.materials.append(tm)
         dzz = FN["z_hole"] + k * DZ - zz; s_ = (-FN["v0"] + math.sqrt(FN["v0"] ** 2 + 2 * FN["A"] * max(dzz, 0))) / FN["A"]
         tp = FN["drop"] + s_ + sh
@@ -360,6 +392,7 @@ while len(tmpl) < 110:
     if abs(rr - R) < 1.2 or abs(rr - R - RF) < RF + 0.6: continue
     tmpl.append((p, rnd.uniform(0.025, 0.06), rnd.randrange(3)))
 COLS = [(1.0, 0.55, 0.25), (1.0, 0.35, 0.6), (0.5, 0.7, 1.0)]
+if PIRATE: COLS = [(1.0, 0.62, 0.2), (1.0, 0.85, 0.5), (0.7, 0.9, 1.0)]      # paillettes d'or et embruns
 for ci, col in enumerate(COLS):
     verts, faces = [], []
     for k in (-1, 0, 1, 2):
@@ -373,6 +406,20 @@ for ci, col in enumerate(COLS):
     me = bpy.data.meshes.new(f"poussieres_{ci}"); me.from_pydata(verts, [], faces); me.update()
     o = bpy.data.objects.new(f"poussieres_{ci}", me); sc.collection.objects.link(o)
     o.data.materials.append(mat(f"poussiere_{ci}", base=(0, 0, 0), emis=col, strength=8.0))
+
+# ---------------- ocean (suit la descente : reste periodique) ----------------
+if PIRATE:
+    bpy.ops.mesh.primitive_plane_add(size=900); sea = bpy.context.object
+    ms = mat("ocean", base=(0.01, 0.06, 0.10), rough=0.08)
+    ns = ms.node_tree; pse = ns.nodes.get("Principled BSDF")
+    nz_ = ns.nodes.new("ShaderNodeTexNoise"); nz_.inputs["Scale"].default_value = 60.0; nz_.inputs["Detail"].default_value = 6.0
+    bump = ns.nodes.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.25
+    ns.links.new(nz_.outputs["Fac"], bump.inputs["Height"]); ns.links.new(bump.outputs["Normal"], pse.inputs["Normal"])
+    sea.data.materials.append(ms)
+    for f in range(KF0, KF1 + 1):
+        t = f / FPS
+        sea.location = (0, 0, smooth_ball(t, 1.5, 9).z - 24); sea.rotation_euler = (0, 0, DA * t / PER)
+        sea.keyframe_insert("location", frame=f); sea.keyframe_insert("rotation_euler", index=2, frame=f)
 
 # ---------------- bille ----------------
 bpy.ops.mesh.primitive_uv_sphere_add(radius=BR, segments=64, ring_count=32)
