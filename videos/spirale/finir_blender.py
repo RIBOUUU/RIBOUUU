@@ -10,6 +10,7 @@ tmp = tempfile.mkdtemp()
 files = sorted(glob.glob(os.path.join(src, "*.png")))
 for k, f in enumerate(files):
     im = Image.open(f).convert("RGB")
+    if im.size != (1080, 1920): im = im.resize((1080, 1920), Image.LANCZOS)
     a = np.asarray(im).astype(np.float32) / 255
     lum = a.max(axis=2, keepdims=True)
     bright = np.clip((lum - 0.55) / 0.45, 0, 1) * a            # seulement les zones tres lumineuses
