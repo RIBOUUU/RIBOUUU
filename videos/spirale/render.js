@@ -18,7 +18,7 @@ const srv = http.createServer((q, r) => {
   const range = only && only.includes('-') ? only.split('-').map(Number) : null;
   const preview = only && !range;
   const out = path.join(__dirname, preview ? 'preview' : 'frames'); fs.mkdirSync(out, { recursive: true });
-  const nAll = Math.ceil(end * fps);
+  const nAll = Math.ceil(end * fps - 1e-6);
   const idx = preview ? null : [...Array(nAll).keys()].filter(i => !range || (i >= range[0] && i < range[1]));
   const times = preview ? only.split(',').map(Number) : idx.map(i => i / fps);
   const t0 = Date.now();

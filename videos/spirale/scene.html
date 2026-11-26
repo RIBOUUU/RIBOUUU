@@ -13,7 +13,18 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 const params = new URLSearchParams(location.search);
 const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
 const TL = await (await fetch('timeline.json')).json();
-const HITS = TL.hits, N = HITS.length;
+// Mode boucle : on prolonge la spirale avant et apres (copies periodiques des notes),
+// pour que la derniere image s'enchaine exactement sur la premiere.
+const LOOP = !!TL.loop, N0 = TL.hits.length, KX = LOOP ? 20 : 0;
+const HITS = [];
+for (let j = -KX; j < N0 + KX; j++) {
+  const m = ((j % N0) + N0) % N0, rep = Math.floor(j / N0);
+  HITS.push({ ...TL.hits[m], t: TL.hits[m].t + rep * TL.end });
+}
+const N = HITS.length;
+// en boucle, chaque oscillation fait un nombre entier de tours sur la duree de la boucle
+const WQ = w => LOOP ? Math.max(1, Math.round(w * TL.end / (2 * Math.PI))) * 2 * Math.PI / TL.end : w;
+const IDX = j => LOOP ? (((j - KX) % N0) + N0) % N0 : j;   // indice de la note dans le morceau
 
 // =====================================================================
 // PRINCIPE : la bille avance TOUJOURS a la meme vitesse le long de la
@@ -46,7 +57,8 @@ const FALL_STYLES = [
   { name: 'zigzag',      g: 39, slope: 1.3, zig: 0.6 },
   { name: 'ecrase',      g: 39, slope: 1.3, squash: true },
 ];
-const segOf = i => Math.floor(i / SEG);
+const segOf = i => Math.floor(IDX(i) / SEG);
+const segStartT = i => HITS[Math.max(0, i - (IDX(i) % SEG))].t;   // instant de la 1re note du segment
 const blockStyle = i => BLOCK_STYLES[segOf(i) % BLOCK_STYLES.length];
 const fallStyle = i => FALL_STYLES[segOf(i) % FALL_STYLES.length];
 
@@ -56,13 +68,13 @@ const hops = [];   // {T, g, vy}
 land.push({ a: 0, y: 0, r: R });
 for (let i = 0; i < N; i++) {
   // derniere note : la bille saute directement sur le rail de sortie (elle n'attend pas la fin du son)
-  const T = i === N - 1 ? 0.45 : HITS[i].dur, fs = fallStyle(i);
+  const T = !LOOP && i === N - 1 ? 0.45 : HITS[i].dur, fs = fallStyle(i);
   let dy = -fs.slope * T;
   let vy = (dy + fs.g * T * T / 2) / T;
   const vmax = Math.sqrt(2 * fs.g * APEX_MAX);
   if (vy > vmax) { vy = vmax; dy = vy * T - fs.g * T * T / 2; }   // note longue : chute plus profonde
   const nextZig = i + 1 < N ? fallStyle(i + 1).zig || 0 : 0;
-  const r = R + (nextZig ? ((i + 1) % 2 ? nextZig : -nextZig) : 0);
+  const r = R + (nextZig ? ((IDX(i + 1)) % 2 ? nextZig : -nextZig) : 0);
   hops.push({ T, g: fs.g, vy });
   const p = land[i];
   land.push({ a: p.a - V * T / R, y: p.y + dy, r });
@@ -198,7 +210,7 @@ function addBlock(i, p, hitT) {
     const s = new THREE.Mesh(screwGeo, screwMat); s.position.set(sx, st.H / 2 + 0.01, 0); grp.add(s);
   }
   const faceH = Math.min(st.H * 0.96, faceW * 1.1), faceGeo = new THREE.PlaneGeometry(faceW, faceH);
-  const d = (i + 1) % 10;
+  const d = (IDX(i) + 1) % 10;
   const off = new THREE.Mesh(faceGeo, new THREE.MeshBasicMaterial({ map: digitTex(d, null) }));
   off.position.x = faceX + 0.003; off.rotation.y = Math.PI / 2; grp.add(off);
   const onMat = new THREE.MeshBasicMaterial({ map: digitTex(d, st.neon), transparent: true, opacity: 0, toneMapped: false,
@@ -209,7 +221,7 @@ function addBlock(i, p, hitT) {
     blending: THREE.AdditiveBlending, depthWrite: false });
   const rim = new THREE.Mesh(new THREE.PlaneGeometry(st.shape === 'hex' ? faceW * 1.6 : st.L * 0.96, st.shape === 'hex' ? faceW * 1.6 : w * 0.9), rimMat);
   rim.rotation.x = -Math.PI / 2; rim.position.y = st.H / 2 + 0.004; grp.add(rim);
-  if (i % 3 === 0 && isFinite(hitT)) {
+  if (IDX(i) % 3 === 0 && isFinite(hitT)) {
     const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 6), wireMat);
     wire.position.set(faceX - 0.15, st.H / 2 + 15, 0); grp.add(wire);
   }
@@ -221,6 +233,7 @@ for (const d of decoys) addBlock(d.i, d.p, Infinity);
 
 // ---------- rail de sortie ----------
 const railMat = new THREE.MeshStandardMaterial({ color: 0x9a9aa6, metalness: 0.9, roughness: 0.25 });
+const railGroup = new THREE.Group(); railGroup.visible = !LOOP; scene.add(railGroup);
 const RAIL_LIFT = 0.07 + BR;
 const E = land[N];
 const outPts = [0, 1.5, 3.2, 5.5, 8.5].map((k, j) => onSpiral(E.a - k / R * 1.6, E.y - RAIL_LIFT - j * 0.45, R));
@@ -228,13 +241,13 @@ const outCurve = new THREE.CatmullRomCurve3(outPts);
 for (const dr of [-0.17, 0.17]) {
   const p = outPts.map(v => { const r = Math.hypot(v.x, v.z), a = Math.atan2(v.z, v.x); return onSpiral(a, v.y, r + dr); });
   const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(p), 200, 0.025, 8), railMat);
-  tube.castShadow = true; scene.add(tube);
+  tube.castShadow = true; railGroup.add(tube);
 }
 for (let u = 0.04, j = 0; u < 1; u += 0.08, j++) {
   const v = outCurve.getPoint(u), a = Math.atan2(v.z, v.x);
   const t = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.4, 6), railMat);
-  t.position.set(v.x, v.y - 0.06, v.z); t.rotation.z = Math.PI / 2; t.rotation.y = -a; scene.add(t);
-  if (j % 3 === 1) { const h = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 30, 4), wireMat); h.position.set(v.x, v.y + 15, v.z); scene.add(h); }
+  t.position.set(v.x, v.y - 0.06, v.z); t.rotation.z = Math.PI / 2; t.rotation.y = -a; railGroup.add(t);
+  if (j % 3 === 1) { const h = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 30, 4), wireMat); h.position.set(v.x, v.y + 15, v.z); railGroup.add(h); }
 }
 
 // ---------- bille ----------
@@ -261,10 +274,10 @@ const ballLight = new THREE.PointLight(0x5cffd8, 6, 5, 1.6); ballPivot.add(ballL
 const BALL_COLORS = ['#3fe0d0', '#ff4fa3', '#ffb02e', '#8f6bff', '#7dff5a', '#ff5a3c'].map(c => new THREE.Color(c));
 function updateBallColor(t) {
   const i = t < HITS[0].t ? 0 : hopIndex(t), k = segOf(i);
-  const tCut = HITS[Math.min(k * SEG, N - 1)].t, u = t - tCut;
+  const tCut = segStartT(i), u = t - tCut;
   const cur = BALL_COLORS[k % BALL_COLORS.length], prev = BALL_COLORS[(k + BALL_COLORS.length - 1) % BALL_COLORS.length];
-  const c = k > 0 && u < 0.15 ? prev.clone().lerp(cur, u / 0.15) : cur.clone();
-  const flash = k > 0 ? Math.exp(-Math.max(u, 0) / 0.12) : 0;
+  const c = (LOOP || k > 0) && u < 0.15 ? prev.clone().lerp(cur, u / 0.15) : cur.clone();
+  const flash = (LOOP || k > 0) ? Math.exp(-Math.max(u, 0) / 0.12) : 0;
   ball.material.color.copy(c);
   ball.material.emissive.copy(c).lerp(new THREE.Color(1, 1, 1), flash * 0.6);
   ball.material.emissiveIntensity = 1.25 + 2.5 * flash;
@@ -313,7 +326,7 @@ const SHOTS = ['suivi', 'plongee', 'contre-plongee', 'poursuite', 'balayage', 'p
 function updateCamera(t) {
   const iSeg = t < HITS[0].t ? 0 : hopIndex(Math.min(t, HITS[N - 1].t));
   const k = segOf(iSeg), shot = SHOTS[k % SHOTS.length];
-  const tCut = HITS[Math.min(k * SEG, N - 1)].t, u = Math.max(0, t - tCut);   // temps depuis la coupe
+  const tCut = segStartT(iSeg), u = Math.max(0, t - tCut);   // temps depuis la coupe
   const sb = smoothBall(t), look = smoothBall(t + 0.25, 0.35, 9);
   const a = Math.atan2(sb.z, sb.x);
   const rad = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));          // vers l'exterieur
@@ -330,9 +343,9 @@ function updateCamera(t) {
     target = at(mid, 0.3, 0, -1.6);
     fov = 50 - 6 * Math.exp(-uf / 0.18);
   } else if (shot === 'suivi') {
-    const intro = 1 - ease(Math.min(1, Math.max(0, t) / 1.2));
-    const phi = a + 0.6 + 0.2 * Math.sin(t * 0.35) + 0.4 * intro;
-    const rc = 15.5 + Math.sin(t * 0.42 + 0.6) + 2.5 * intro, hc = 7.8 + 1.2 * Math.sin(t * 0.31 + 1.2) + 2 * intro;
+    const intro = LOOP ? 0 : 1 - ease(Math.min(1, Math.max(0, t) / 1.2));
+    const phi = a + 0.6 + 0.2 * Math.sin(t * WQ(0.35)) + 0.4 * intro;
+    const rc = 15.5 + Math.sin(t * WQ(0.42) + 0.6) + 2.5 * intro, hc = 7.8 + 1.2 * Math.sin(t * WQ(0.31) + 1.2) + 2 * intro;
     pos = new THREE.Vector3(rc * Math.cos(phi), sb.y + hc, rc * Math.sin(phi));
     target = new THREE.Vector3(look.x * 0.8, look.y - 1.6, look.z * 0.8);
   } else if (shot === 'plongee') {                    // vue du dessus qui tourne sur elle-meme
@@ -368,8 +381,8 @@ function updateCamera(t) {
 function renderAt(t) {
   const p = ballPos(t);
   ballPivot.position.copy(p);
-  ball.rotation.set(t * 2.1, -t * 3.3, 0);
-  halo.material.opacity = 0.10 + 0.04 * Math.sin(t * 9);
+  ball.rotation.set(t * WQ(2.1), -t * WQ(3.3), 0);
+  halo.material.opacity = 0.10 + 0.04 * Math.sin(t * WQ(9));
   updateBallColor(t);
 
   // ecrasement a l'impact (style "ecrase")
@@ -395,8 +408,9 @@ function renderAt(t) {
   }
 
   updateCamera(t);
-  sun.position.copy(p).add(SUN_OFF); sun.target.position.copy(p);
-  sky.position.copy(camera.position);
+  const aB = Math.atan2(p.z, p.x);
+  sun.position.copy(p).add(SUN_OFF.clone().applyAxisAngle(UP, -aB)); sun.target.position.copy(p);
+  sky.position.copy(camera.position); sky.rotation.y = -aB;
   composer.render();
 }
 window.renderAt = t => { renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.93); };

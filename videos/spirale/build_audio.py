@@ -6,6 +6,7 @@ Morceaux :
   slapstick: compo originale, swing burlesque (dans l'esprit d'Oggy et les Cafards)
   heroine  : compo originale, pop heroique (dans l'esprit de Miraculous)
   lyoko    : compo originale, electro sombre (dans l'esprit de Code Lyoko)
+  slapstick_boucle : le swing en boucle parfaite (20 s, la fin s'enchaine sur le debut)
 Les trois dernieres sont des melodies ORIGINALES qui reprennent seulement un style
 (tempo, gamme, rythme, instrument), pas les generiques eux-memes.
 
@@ -39,6 +40,14 @@ SONGS = {
         sections=[(0, 0.30), (0, 0.23)],
         finale=[("A5",1,0.15),("F5",1,0.15),("D5",1,0.15),("A4",1,0.15),("C#5",1,0.18),("D5+D3+A3",5,0.30)],
     ),
+    # Version BOUCLE du swing : tempo constant, relance a la fin qui ramene au debut sans coupure.
+    # 27 + 27 + 6 = 60 notes = 6 segments de 10 (les 6 styles font un tour complet).
+    "slapstick_boucle": dict(
+        timbre="xylo", swing=True, loop=True, loop_seconds=20.0,
+        theme=None,   # reprend le theme de "slapstick" (voir plus bas)
+        sections=[(0, 1), (0, 1)],
+        finale=[("A4+A2",1,1),("C#5",1,1),("E5+A2",1,1),("G5",1,1),("F5+A2",1,1),("E5",1,1)],
+    ),
     # Pop heroique en mi majeur : grands intervalles qui montent, syncopes, accords au debut des phrases.
     "heroine": dict(
         timbre="glock", swing=False,
@@ -68,8 +77,12 @@ name_of = lambda m: NOTE_NAMES[m % 12] + str(m // 12 - 1)
 freq = lambda n: 440.0 * 2 ** ((midi_of(n) - 69) / 12)
 transpose = lambda chord, tr: "+".join(name_of(midi_of(n) + tr) for n in chord.split("+"))
 
+SONGS["slapstick_boucle"]["theme"] = SONGS["slapstick"]["theme"]
 song_name = sys.argv[1] if len(sys.argv) > 1 else "grieg"
 song = SONGS[song_name]
+LOOP = song.get("loop", False)
+if LOOP:
+    T0 = 0.0                                   # la boucle commence pile sur une note
 
 # --- sequence (note, duree en s), avec swing optionnel (croches longue-courte) ---
 SEQ = []
@@ -80,17 +93,25 @@ for tr, unit in song["sections"]:
         if song["swing"] and d == 1:
             dd = 1.3 if pos % 2 == 0 else 0.7
         SEQ.append((transpose(n, tr), dd * unit)); pos += d
-SEQ += [(n, d * u) for n, d, u in song["finale"]]
+pos = 0
+for n, d, u in song["finale"]:
+    dd = d
+    if song["swing"] and d == 1:
+        dd = 1.3 if pos % 2 == 0 else 0.7
+    SEQ.append((n, dd * u)); pos += d
+if LOOP:   # on cale la duree totale exactement sur loop_seconds (nombre entier d'images)
+    k = song["loop_seconds"] / sum(d for _, d in SEQ)
+    SEQ = [(n, d * k) for n, d in SEQ]
 
 hits, t = [], T0
 for n, d in SEQ:
     hits.append({"t": round(t, 4), "note": n, "dur": round(d, 4)})
     t += d
-end = hits[-1]["t"] + hits[-1]["dur"] + OUTRO
-json.dump({"song": song_name, "hits": hits, "end": round(end, 3), "t0": T0}, open("timeline.json", "w"), indent=1)
+end = song["loop_seconds"] if LOOP else hits[-1]["t"] + hits[-1]["dur"] + OUTRO
+json.dump({"song": song_name, "loop": LOOP, "hits": hits, "end": round(end, 4), "t0": T0}, open("timeline.json", "w"), indent=1)
 
 # --- synthese ---
-total = int((end + 0.6) * SR)
+total = int((end + (4.5 if LOOP else 0.6)) * SR)
 L = np.zeros(total); Rch = np.zeros(total)
 rng = np.random.default_rng(7)
 sin = lambda f, tt: np.sin(2 * np.pi * f * tt)
@@ -135,7 +156,8 @@ def roll(t1, t2, gain=0.05):      # roulement de la bille sur le rail de sortie
     nz = np.convolve(rng.normal(0, 1, b - a), np.ones(40) / 40, mode="same")
     env = np.sin(np.linspace(0, np.pi, b - a)) ** 0.5
     L[a:b] += nz * env * gain; Rch[a:b] += nz * env * gain
-roll(hits[-1]["t"] + 0.45, end)
+if not LOOP:
+    roll(hits[-1]["t"] + 0.45, end)
 
 ir_t = np.arange(int(1.8 * SR)) / SR
 def ir():
@@ -148,6 +170,12 @@ def conv(x, h):
 wet = 0.25 if song["timbre"] == "synth" else 0.35
 L = L + wet * conv(L, ir()); Rch = Rch + wet * conv(Rch, ir())
 
+if LOOP:   # boucle : la queue du son (resonance + reverb) se replie sur le debut
+    n = int(round(end * SR))
+    for ch in (L, Rch):
+        tail = ch[n:].copy()
+        ch[:len(tail)] += tail
+    L, Rch = L[:n], Rch[:n]
 m = max(np.abs(L).max(), np.abs(Rch).max())
 st = (np.stack([L, Rch], 1) / m * 0.89 * 32767).astype(np.int16)
 w = wave.open("audio.wav", "wb"); w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR)
