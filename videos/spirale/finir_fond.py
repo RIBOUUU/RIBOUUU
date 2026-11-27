@@ -76,6 +76,27 @@ def background(tl):
         img = Image.alpha_composite(img, layer)
     return np.asarray(img.convert("RGB").filter(ImageFilter.GaussianBlur(1.2))).astype(np.float32) / 255
 
+# --- trainee lumineuse derriere la bille (positions exportees de Blender : EXPORT_BILLE)
+TR = json.load(open(os.environ["TRAINEE"])) if os.environ.get("TRAINEE") else None
+from PIL import ImageDraw
+def trail_layer(fi):
+    d = TR["frames"][fi]; M = np.array(d["cam"]); k = TR["lens"] / TR["sensor"] * H
+    pts = np.array(d["past"]); P = (M[:3, :3] @ pts.T).T + M[:3, 3]
+    n = len(pts); outer = Image.new("L", (W, H), 0); core = Image.new("L", (W, H), 0)
+    do, dc = ImageDraw.Draw(outer), ImageDraw.Draw(core)
+    for j in range(n - 1, -1, -1):
+        x, y, z = P[j]
+        if z > -0.5: continue
+        u = j / n; px = W / 2 + k * x / -z; py = H / 2 - k * y / -z; rb = k * TR["br"] / -z
+        r = rb * 0.95 * (1 - u) ** 0.7; a = int(255 * (1 - u) ** 1.3)
+        do.ellipse((px - r, py - r, px + r, py + r), fill=a)
+        rc = r * 0.42; dc.ellipse((px - rc, py - rc, px + rc, py + rc), fill=a)
+    o_ = np.asarray(outer.filter(ImageFilter.GaussianBlur(2.5))).astype(np.float32)[..., None] / 255
+    c_ = np.asarray(core.filter(ImageFilter.GaussianBlur(1.5))).astype(np.float32)[..., None] / 255
+    col = np.array(d["col"], np.float32)
+    rgb = col * (1 - c_) + np.array([1, 1, 1], np.float32) * c_
+    return rgb, np.clip(o_ * 0.9 + c_ * 0.1, 0, 1)
+
 files = sorted(glob.glob(os.path.join(src, "*.png")))
 if len(sys.argv) > 6:            # apercu : quelques images seulement
     files = files[:]
@@ -86,9 +107,13 @@ for f, path in enumerate(files):
     if fg.size != (W, H): fg = fg.resize((W, H), Image.LANCZOS)
     a = np.asarray(fg).astype(np.float32) / 255; rgb, al = a[..., :3], a[..., 3:]
     tl = (OFF + fi / 30) % PER
-    comp = rgb * al + background(tl) * (1 - al)
+    bgi = background(tl)
+    if TR is not None:
+        trgb, ta = trail_layer(fi); bgi = bgi * (1 - ta) + trgb * ta
+    comp = rgb * al + bgi * (1 - al)
     lum = (rgb * al).max(axis=2, keepdims=True)
     bright = np.clip((lum - 0.55) / 0.45, 0, 1) * rgb * al
+    if TR is not None: bright = np.maximum(bright, trgb * ta * (1 - al) * 0.9)
     b = Image.fromarray((bright * 255).astype(np.uint8))
     glow = sum(np.asarray(b.filter(ImageFilter.GaussianBlur(r))).astype(np.float32) / 255 * w for r, w in ((8, 0.6), (24, 0.5), (60, 0.4)))
     res = 1 - (1 - comp) * (1 - np.clip(glow, 0, 1))

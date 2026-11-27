@@ -536,6 +536,14 @@ for f in range(KF0, KF1 + 1):
     pulse = sum(math.exp(-(tl - x) / 0.12) for x in KICKS if x >= EXIT - 1e-6 and 0 <= tl - x < 0.6)
     bl_d.energy = 120 + 160 * boost + 90 * pulse; bl_d.keyframe_insert("energy", frame=f)
 
+if os.environ.get("EXPORT_BILLE"):       # positions de la bille + camera image par image (pour la trainee au montage)
+    rows = []
+    for f in range(NV):
+        sc.frame_set(F0 + f); M = cam.matrix_world.inverted()
+        rows.append(dict(f=f, cam=[list(r) for r in M], past=[list(ball_pos((F0 + f) / FPS - j / 120)) for j in range(0, 72)],
+                         col=ball_col(loc((F0 + f) / FPS))))
+    json.dump(dict(lens=cam_d.lens, sensor=cam_d.sensor_height, br=BR, dt=1 / 120, frames=rows), open(os.environ["EXPORT_BILLE"], "w"))
+    print("export ok", flush=True); sys.exit(0)
 sc.render.use_compositing = False; sc.render.use_sequencer = False
 # acceleration : modificateurs figes une fois pour toutes + donnees persistantes entre les images
 dg = bpy.context.evaluated_depsgraph_get()
