@@ -539,10 +539,11 @@ for f in range(KF0, KF1 + 1):
 if os.environ.get("EXPORT_BILLE"):       # positions de la bille + camera image par image (pour la trainee au montage)
     rows = []
     for f in range(NV):
-        sc.frame_set(F0 + f); M = cam.matrix_world.inverted()
-        rows.append(dict(f=f, cam=[list(r) for r in M], past=[list(ball_pos((F0 + f) / FPS - j / 60)) for j in range(0, 90)],
-                         col=ball_col(loc((F0 + f) / FPS))))
-    json.dump(dict(lens=cam_d.lens, sensor=cam_d.sensor_height, br=BR, dt=1 / 60, frames=rows), open(os.environ["EXPORT_BILLE"], "w"))
+        sc.frame_set(F0 + f); rows.append(dict(f=f, cam=[list(r) for r in cam.matrix_world.inverted()]))
+    g0 = 2 * (F0 - NV) - 4                       # grille globale de positions (60 par seconde) sur 2 periodes
+    pos = [list(ball_pos(g / 60)) + list(ball_col(loc(g / 60))) for g in range(g0, 2 * (F0 + NV) + 1)]
+    json.dump(dict(lens=cam_d.lens, sensor=cam_d.sensor_height, br=BR, g0=g0, pos=pos, frames=rows),
+              open(os.environ["EXPORT_BILLE"], "w"))
     print("export ok", flush=True); sys.exit(0)
 sc.render.use_compositing = False; sc.render.use_sequencer = False
 # acceleration : modificateurs figes une fois pour toutes + donnees persistantes entre les images

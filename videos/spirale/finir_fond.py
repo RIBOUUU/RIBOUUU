@@ -79,24 +79,31 @@ def background(tl):
 # --- trainee lumineuse derriere la bille (positions exportees de Blender : EXPORT_BILLE)
 TR = json.load(open(os.environ["TRAINEE"])) if os.environ.get("TRAINEE") else None
 from PIL import ImageDraw
+if TR is not None:
+    POS = np.array(TR["pos"]); G0 = TR["g0"]; NG = int(round(PER * 60))
+    RNG = np.random.default_rng(7); JIT = (RNG.random((NG, 3)) - 0.5) * 0.45; RAD = 0.22 + 0.3 * RNG.random(NG)
+    KEEP = RNG.random(NG) > 0.2
 def trail_layer(fi):
-    """trainee de petites billes : la bille seme des perles qui restent en place puis s'eteignent"""
+    """trainee de petites billes qui RESTE : tout le chemin de la derniere boucle reste seme de perles"""
     d = TR["frames"][fi]; M = np.array(d["cam"]); k = TR["lens"] / TR["sensor"] * H
-    pts = np.array(d["past"]); n = len(pts); NF = len(TR["frames"])
-    g0 = int(round((OFF * 30 + fi) * 2))                  # indice global des perles (60 par seconde)
+    gn = int(round((OFF * 30 + fi) * 2))                   # perle la plus recente (60 par seconde)
+    gs = np.arange(gn - NG + 1, gn - 1)                    # une boucle entiere de perles
+    idx = gs % NG; ok = KEEP[idx]; gs, idx = gs[ok], idx[ok]
+    P = POS[gs - G0]; C = P[:, 3:]
+    th = np.arctan2(P[:, 1], P[:, 0]); cs, sn = np.cos(th), np.sin(th); J = JIT[idx]   # ecart tournant avec la spirale (boucle exacte)
+    Pw = P[:, :3] + np.stack([J[:, 0] * cs - J[:, 1] * sn, J[:, 0] * sn + J[:, 1] * cs, J[:, 2]], 1)
+    Q = Pw @ M[:3, :3].T + M[:3, 3]
     rgbI = Image.new("RGB", (W, H), (0, 0, 0)); aI = Image.new("L", (W, H), 0)
     dr, da = ImageDraw.Draw(rgbI), ImageDraw.Draw(aI)
-    for j in range(n - 1, 1, -1):
-        g = (g0 - j) % (NF * 2); rg = np.random.default_rng(g)
-        if rg.random() < 0.25: continue                    # quelques trous : des perles, pas un trait
-        off = (rg.random(3) - 0.5) * 0.45
-        x, y, z = M[:3, :3] @ (pts[j] + off) + M[:3, 3]
+    order = np.argsort(Q[:, 2])                            # du plus loin au plus proche
+    for q in order:
+        x, y, z = Q[q]
         if z > -0.5: continue
-        u = j / n; px = W / 2 + k * x / -z; py = H / 2 - k * y / -z
-        r = k * TR["br"] / -z * (0.22 + 0.3 * rg.random()) * (1 - u) ** 0.5
-        if r < 0.8: continue
-        al = int(255 * min(1, (1 - u) * 1.4))
-        col = np.array(TR["frames"][(fi - j // 2) % NF]["col"])          # couleur de la bille quand la perle est nee
+        age = (gn - gs[q]) / NG
+        px = W / 2 + k * x / -z; py = H / 2 - k * y / -z; r = k * TR["br"] / -z * RAD[idx[q]]
+        if r < 0.7 or not (-20 < px < W + 20 and -20 < py < H + 20): continue
+        al = int(255 * min(1.0, (1 - age) / 0.06))           # disparait seulement tout au bout (une boucle plus tard)
+        col = C[q]
         c1 = tuple(int(255 * min(1, v * 0.85 + 0.1)) for v in col); c2 = tuple(int(255 * min(1, v * 0.4 + 0.6)) for v in col)
         dr.ellipse((px - r, py - r, px + r, py + r), fill=c1); da.ellipse((px - r, py - r, px + r, py + r), fill=al)
         h = r * 0.45; dr.ellipse((px - r * 0.35 - h, py - r * 0.35 - h, px - r * 0.35 + h, py - r * 0.35 + h), fill=c2)
