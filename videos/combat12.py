@@ -77,6 +77,7 @@ P.update({
  "stuck":   [(0,-58),(0,-80),(-22,-70),(-38,-90),(22,-70),(38,-90),(16,28),(30,54),(-16,28),(-30,54)],
  "rage":    [(10,-54),(18,-72),(18,-36),(20,-18),(-6,-36),(-6,-18),(16,24),(28,53),(-18,24),(-32,53)],
  "rage2":   [(-2,-58),(-8,-80),(22,-44),(30,-26),(-22,-44),(-30,-26),(16,24),(28,53),(-18,24),(-32,53)],
+ "lie":     [(1,-58),(3,-80),(-3,-40),(-1,-18),(2,-78),(1,-102),(2,30),(3,59),(-2,30),(-1,59)],
  "fire":    [(14,-55),(22,-76),(26,-54),(52,-54),(24,-52),(50,-50),(18,24),(28,53),(-16,25),(-28,53)],
 })
 P = {k: np.array(v, float) for k, v in P.items()}
@@ -268,7 +269,7 @@ def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False,
         IKS[a].append(dict(t0=ts, t1=ti, t2=ti + 0.3, limb="bha", tgt=("zone", d, 2, (0, 0)), cap=None))
         Ta.add(ti + 0.35, pose="throw", x=xa_imp - Fa*6); Ta.add(ti + 0.7, pose="stance", plant=BOTH)
         Td.add(ti); Td.add(ti + 0.06, pose="flail", plant=NONE)
-        Td.add(ti + 0.95, x=xa_imp - Fa*700, h=0, rot=-270, pose="flail", ease="grav"); Td.add(ti + 1.0, pose="hit_head")
+        Td.add(ti + 0.95, x=xa_imp - Fa*700, h=0, rot=-270, pose="flail", ease="grav"); Td.add(ti + 1.0, pose="lie")
         Td.add(ti + 1.2, x=xa_imp - Fa*840, ease="out")
         fx(ti, "hit", 1.0, (d, 2), d, "neck"); fx(ti + 0.95, "land", 2.6, (d, 0), d)
         FLIGHTS.append((xd, xa_imp - Fa*700))
@@ -289,11 +290,11 @@ def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False,
                 Td.add(t2_, pose="flail", x=xd + Fa*D*0.8, h=0, rot=sg*560, ease="grav")
                 fx(t1_, "land", 2.0, (d, 0), d); fx(t2_, "land", 1.6, (d, 0), d)
             else: tl = ti + 1.0
-            Td.add(tl, pose="flail", x=xd + Fa*D, h=0, rot=sg*450, ease="grav"); Td.add(tl + 0.06, pose="hit_head")
+            Td.add(tl, pose="flail", x=xd + Fa*D, h=0, rot=sg*450, ease="grav"); Td.add(tl + 0.06, pose="lie")
             Td.add(tl + 0.45, x=xd + Fa*(D + 220), ease="out")
             fx(tl, "land", 2.6, (d, 0), d); FLIGHTS.append((xd, xd + Fa*(D + 220)))
             tk = tl + 2.15
-            for k in range(1, 5): Td.add(tl + 0.45 + k*0.38, pose="hit_head", x=xd + Fa*(D + 220) + random.uniform(-1.5, 1.5))
+            for k in range(1, 5): Td.add(tl + 0.45 + k*0.38, pose="lie", x=xd + Fa*(D + 220) + random.uniform(-1.5, 1.5))
             KOS.append((tl + 0.1, tk, d))
             if air: Ta.add(ti + 0.5, h=hv, pose="fly"); Ta.add(ti + 1.2, h=0, pose="stance", ease="io"); Ta.add(ti + 1.25, plant=BOTH)
             Ta.add(ti + 1.3, pose="scream", ease="out"); Ta.add(ti + 2.0, pose="scream"); Ta.add(ti + 2.3, pose="stance")   # cri de victoire
@@ -345,8 +346,8 @@ def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False,
         if not air and power >= 1.2 and t_next - ti >= 1.85 and hv < 8 and random.random() < 0.75:
             Ph = 0.0; Pz = 0.0; Px = xd + Fa*random.uniform(450, 700); tm = ti + 0.5
             Td.add(ti); Td.add(ti + 0.05, pose="flail", x=xd + Fa*15, h=hv + 10, plant=NONE, ease="out")
-            Td.add(tm, pose="stuck", x=Px, h=0, z=0, rot=-90, ease="grav")
-            for k in range(1, 3): Td.add(tm + k*0.25, pose="stuck", x=Px + random.uniform(-1.5, 1.5))
+            Td.add(tm, pose="lie", x=Px, h=0, z=0, rot=-90, ease="grav")
+            for k in range(1, 3): Td.add(tm + k*0.25, pose="lie", x=Px + random.uniform(-1.5, 1.5))
             Td.add(tm + 0.7, pose="fly", rot=0, h=40)
             Td.add(tm + 1.15, x=xa_imp + Fa*140, h=0, z=0, pose="stance", ease="io"); Td.add(tm + 1.2, plant=BOTH)
             fx(tm, "land", 3.4, ("pt", Px, 0, 0), d); fx(tm + 0.65, "breakout", 2.0, ("pt", Px, Ph, Pz))
@@ -360,7 +361,7 @@ def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False,
         if air and last:       # écrasé au sol depuis le ciel
             Td.add(ti); Td.add(ti + 0.04, pose="flail", x=xd + Fa*10, plant=NONE, ease="out")
             tl = ti + 0.04 + max(0.3, math.sqrt(2*hv/G)*0.75)
-            Td.add(tl, pose="flail", x=xd + Fa*500, h=0, rot=-450, ease="grav"); Td.add(tl + 0.05, pose="hit_head")
+            Td.add(tl, pose="flail", x=xd + Fa*500, h=0, rot=-450, ease="grav"); Td.add(tl + 0.05, pose="lie")
             Td.add(tl + 0.5, x=xd + Fa*680, ease="out")
             fx(tl, "land", 3.0, (d, 0), d)
             tg = max(tl + 0.5, min(t_next - 1.3, tl + 1.3))
@@ -375,7 +376,7 @@ def strike(a, d, m, ti, outc, kd, wu, t_next, air=False, last=False, rage=False,
         Td.add(ti); Td.add(ti + 0.05, pose="flail" if tumble else rp, x=xd + Fa*D*0.08, h=hv + 6, rot=sg*20 if tumble else -15, plant=NONE, ease="out")
         FLIGHTS.append((xd, xd + Fa*D))
         if tumble:   # vrille, retombe avec la gravité, glisse, se relève
-            Td.add(ti + fly, pose="flail", x=xd + Fa*D, h=0, rot=sg*450, ease="grav"); Td.add(ti + fly + 0.06, pose="hit_head")
+            Td.add(ti + fly, pose="flail", x=xd + Fa*D, h=0, rot=sg*450, ease="grav"); Td.add(ti + fly + 0.06, pose="lie")
             Td.add(ti + fly + 0.5, x=xd + Fa*(D + 200), ease="out")
             fx(ti + fly, "land", 1.9, (d, 0), d)
             tg = ti + fly + (max(0.4, min(1.4, t_next - ti - fly - 1.0)) if kd else 0.4)
@@ -738,7 +739,9 @@ def rig(i, st, ta, dta):
             q[mi] = q[mi] + (knee - q[mi])*w; q[en] = q[en] + (end - q[en])*w
     r = math.radians(rot); cr, sr = math.cos(r), math.sin(r)
     q = np.stack([(q[:, 0]*cr - q[:, 1]*sr)*c, q[:, 0]*sr + q[:, 1]*cr], 1)
-    if hip_y is None: hip_y = h + q[:, 1].max()
+    if hip_y is None:
+        hip_y = h + q[:, 1].max()
+        if abs(((rot % 180) + 180) % 180 - 90) < 20 and h < 2: hip_y -= 5   # allongé : enfoncé dans le sol
     w = np.stack([X + F*q[:, 0], hip_y - q[:, 1]], 1)
     fs["last"] = [w[9][0], w[11][0]]
     return w
@@ -830,7 +833,7 @@ for f in range(min(int(DUR*FPS/SLOW), int(os.environ.get('MAXF', '10**9')) if os
                 sparks.append([fxp, fh, fz, math.cos(an)*vv, math.sin(an)*vv, random.uniform(-1, 1)*vv*0.6, 1.0, random.choice([(255, 240, 200), (120, 200, 255), (255, 255, 255)])])
             for k_ in range(4): rings.append([fxp, fh, -k_*3, 6, k_ % 2 == 0])
             crater(fxp, 120, fz); debris(fxp, 0, 0, 60, 0, 2.0); break_pillars(fxp, 320)
-        if kind == "land" and s >= 1.5: crater(fxp, 18 + 10*s, fz); debris(fxp, 0, 0, int(6*s)); break_pillars(fxp, 60)
+        if kind == "land" and s >= 1.5: crater(fxp, 30 + 16*s, fz); debris(fxp, 0, fz, int(8*s)); debris(fxp, 0, fz, int(2*s), 0, 1.3, 0.0, (10, 20)); break_pillars(fxp, 60)
         if kind == "hit" and s >= 2.0: break_pillars(fxp, 90)
         if kind == "mountain":   # cratère dans la paroi de la montagne
             MCRATERS.append((fxp, fh, fz + 2, 36, [(random.uniform(0, 2*math.pi), random.uniform(1.4, 2.6)) for _ in range(8)]))
@@ -879,6 +882,11 @@ for f in range(min(int(DUR*FPS/SLOW), int(os.environ.get('MAXF', '10**9')) if os
                         break_pillars(p["x"], 5, vx_*0.6); shake = max(shake, 13 if p["kind"] == "wall" else 9); flash = max(flash, 0.35)
             if st[i]["h"] < 2 and abs(vx_) > 4:
                 MARKS.append((st[i]["x"] - vx_, st[i]["x"], (-6 if i == 0 else 6)))
+                if abs(((st[i]["rot"] % 180) + 180) % 180 - 90) < 20:   # allongé qui frotte : sillon large + poussière
+                    for dz_ in (-12, 0, 12): MARKS.append((st[i]["x"] - vx_*1.2, st[i]["x"], st[i]["z"] + dz_))
+                    for _ in range(4):
+                        sparks.append([st[i]["x"] + random.uniform(-40, 40), 0, st[i]["z"] + random.uniform(-15, 15), -vx_*0.2 + random.uniform(-2, 2), random.uniform(2, 6), random.uniform(-2, 2), 0.8, (140, 115, 90)])
+                    if random.random() < 0.4: debris(st[i]["x"], 0, st[i]["z"], 1, -vx_*0.15, 0.8)
                 if len(MARKS) > 500: MARKS.pop(0)
     prevsk = [sk[0].copy(), sk[1].copy()]
     if dta > 0:
@@ -1425,7 +1433,7 @@ for f in range(min(int(DUR*FPS/SLOW), int(os.environ.get('MAXF', '10**9')) if os
     if f - inv_t == 0: arr = 255 - np.clip(arr, 0, 255)
     if sh is not None: arr[:70*K] = 0; arr[-70*K:] = 0
     hud = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)); hd = ImageDraw.Draw(hud)
-    BW, BH, BY = 226*K, 18*K, 26*K
+    BW, BH, BY = 226*K, 18*K, 150*K
     for i_ in range(2):
         hp_ = hp_at(i_, ta); trail_hp[i_] = max(hp_, trail_hp[i_] - 0.9*max(spd, 0.3)) if trail_hp[i_] > hp_ else hp_
         x0 = 16*K if i_ == 0 else W - 16*K - BW
