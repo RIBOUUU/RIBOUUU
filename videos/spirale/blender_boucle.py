@@ -137,6 +137,13 @@ sc.cycles.samples = SAMPLES; sc.cycles.use_adaptive_sampling = True; sc.cycles.u
 try: sc.cycles.denoiser = 'OPENIMAGEDENOISE'
 except Exception: pass
 sc.cycles.max_bounces = 4; sc.cycles.transparent_max_bounces = 10
+if os.environ.get("RAPIDE") == "1":      # reglages de calcul plus rapides (difference a peine visible apres debruitage)
+    sc.cycles.max_bounces = 3; sc.cycles.diffuse_bounces = 2; sc.cycles.glossy_bounces = 2
+    sc.cycles.transmission_bounces = 4; sc.cycles.adaptive_threshold = 0.05; sc.cycles.adaptive_min_samples = 4
+    sc.render.motion_blur_position = 'CENTER'
+    for k_, v_ in (("denoising_prefilter", 'FAST'), ("denoising_quality", 'BALANCED')):
+        try: setattr(sc.cycles, k_, v_)
+        except Exception: pass
 sc.cycles.caustics_reflective = False; sc.cycles.caustics_refractive = False
 sc.render.resolution_x, sc.render.resolution_y = W, H
 sc.render.fps = FPS
@@ -530,6 +537,11 @@ for f in range(KF0, KF1 + 1):
     bl_d.energy = 120 + 160 * boost + 90 * pulse; bl_d.keyframe_insert("energy", frame=f)
 
 sc.render.use_compositing = False; sc.render.use_sequencer = False
+# acceleration : modificateurs figes une fois pour toutes + donnees persistantes entre les images
+dg = bpy.context.evaluated_depsgraph_get()
+for o_ in [o_ for o_ in sc.objects if o_.type == 'MESH' and o_.modifiers]:
+    me_ = bpy.data.meshes.new_from_object(o_.evaluated_get(dg)); o_.modifiers.clear(); o_.data = me_
+sc.render.use_persistent_data = os.environ.get("PERSIST") == "1"
 os.makedirs(OUT, exist_ok=True)
 if SEL is None: frames = range(0, NV)
 elif "-" in SEL: a0, a1 = map(int, SEL.split("-")); frames = range(a0, a1)
