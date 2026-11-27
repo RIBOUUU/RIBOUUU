@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zombie War : Filles vs Garçons</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  body { display: flex; align-items: center; justify-content: center; }
+  body.transparent { background: transparent; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+'use strict';
+
+/* =====================================================================
+   RÉGLAGES — modifie ici sans toucher au reste
+   ===================================================================== */
+const CONFIG = {
+  roundSeconds: 240,        // durée d'une manche (s)
+  baseHP: 1000,             // vie de chaque base
+  likesForWave: 100,        // nombre de likes pour lancer une vague
+  waveSize: 8,              // zombies par vague
+  commentCooldownMs: 2000,  // 1 zombie max par spectateur toutes les 2 s
+  maxZombiesPerTeam: 140,
+  maxTurrets: 6,
+  wallMax: 1000,
+  wallPerGift: 350,
+  rageThreshold: 0.20,      // sous 20 % de vie : mode RAGE (une fois par manche)
+  rageSeconds: 30,
+  winScreenSeconds: 8,
+  wsUrl: 'ws://localhost:21213/', // API WebSocket de TikFinity
+  // Valeur en pièces d'UN cadeau -> pouvoir (du plus cher au moins cher)
+  giftTiers: [
+    { min: 500, action: 'meteor' },
+    { min: 100, action: 'boss'   },
+    { min: 30,  action: 'wall'   },
+    { min: 5,   action: 'turret' },
+    { min: 1,   action: 'fast'   },
+  ],
+};
+
+/* ===================================================================== */
+const W = 1080, H = 1920;
+const params = new URLSearchParams(location.search);
+const TRANSPARENT = params.has('transparent');
+if (TRANSPARENT) document.body.classList.add('transparent');
+const WS_URL = params.get('ws') || CONFIG.wsUrl;
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+function fit() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width = (W * s) + 'px';
+  cv.style.height = (H * s) + 'px';
+}
+addEventListener('resize', fit); fit();
+
+const EMOJI_FONT = "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji'";
+const font = (size, weight = 800) => `${weight} ${size}px system-ui, -apple-system, 'Segoe UI', Roboto, Arial, ${EMOJI_FONT}, sans-serif`;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const other = t => (t === 'F' ? 'G' : 'F');
+
+/* ---------- Disposition (le bas de l'écran reste libre pour le chat TikTok) ---------- */
+const LAYOUT = {
+  F: { baseTop: 150, baseBot: 290, front: 290, turretY: 322, wallY: 366, spawnY: 395, dir: 1 },
+  G: { baseTop: 1190, baseBot: 1330, front: 1190, turretY: 1158, wallY: 1114, spawnY: 1085, dir: -1 },
+};
+const MID_Y = (LAYOUT.F.wallY + LAYOUT.G.wallY) / 2;
+const TURRET_SLOTS = [390, 690, 250, 830, 110, 970];
+
+const ZTYPES = {
+  zombie: { hp: 30,  dps: 10, speed: 45, r: 18, skin: '#86b86a' },
+  fast:   { hp: 22,  dps: 8,  speed: 95, r: 15, skin: '#b5d84a' },
+  boss:   { hp: 450, dps: 45, speed: 26, r: 42, skin: '#5f8a4c' },
+};
+
+function makeTeam(id) {
+  return {
+    id,
+    name: id === 'F' ? 'FILLES' : 'GARÇONS',
+    emoji: id === 'F' ? '👧' : '👦',
+    color: id === 'F' ? '#ff4fa3' : '#3fa9ff',
+    deep: id === 'F' ? '#7d1650' : '#124a80',
+    hp: CONFIG.baseHP, wall: 0, turrets: [], gauge: 0,
+    rage: 0, rageUsed: false, score: 0, cannonCd: 0, cannonAngle: id === 'F' ? Math.PI / 2 : -Math.PI / 2,
+    shake: 0, members: 0,
+  };
+}
+const T = { F: makeTeam('F'), G: makeTeam('G') };
+
+let zombies = [], bullets = [], particles = [], popups = [], meteors = [];
+let banner = null, screenShake = 0;
+let state = 'play', timeLeft = CONFIG.roundSeconds, winTimer = 0, winner = null;
+let pending = []; // actions reçues pendant l'écran de victoire
+let showHelp = params.has('test');
+let demo = params.has('demo');
+let wsStatus = 'off';
+
+/* ---------- Spectateurs ---------- */
+const members = new Map(); // uniqueId -> { team, name, coins }
+function displayName(d) {
+  const n = String(d.nickname || d.uniqueId || 'Anonyme').trim();
+  return n.length > 14 ? n.slice(0, 13) + '…' : n;
+}
+function setTeam(uid, name, team) {
+  let m = members.get(uid);
+  if (m) {
+    if (m.team === team) return m;
+    T[m.team].members--;
+    m.team = team; m.name = name;
+  } else {
+    m = { team, name, coins: 0 };
+    members.set(uid, m);
+  }
+  T[team].members++;
+  return m;
+}
+function memberOf(d) {
+  const uid = String(d.uniqueId || d.userId || d.nickname || 'anon');
+  const name = displayName(d);
+  let m = members.get(uid);
+  if (!m) {
+    const team = T.F.members <= T.G.members ? 'F' : 'G'; // équilibre automatique
+    m = setTeam(uid, name, team);
+    popup(`${name} rejoint la TEAM ${T[team].name}`, 540, team === 'F' ? 470 : 1010, T[team].color, 30);
+  }
+  m.name = name;
+  return m;
+}
+function parseTeam(txt) {
+  const s = String(txt || '').trim().toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (/^(TEAM\s*)?(F|FILLES?)\s*!*$/.test(s) || s === '👧' || s === '🩷') return 'F';
+  if (/^(TEAM\s*)?(G|GARCONS?)\s*!*$/.test(s) || s === '👦' || s === '💙') return 'G';
+  return null;
+}
+
+/* ---------- Événements TikTok (format TikFinity / TikTok-Live-Connector) ---------- */
+const lastComment = new Map();
+function handleChat(d) {
+  const uid = String(d.uniqueId || d.userId || d.nickname || 'anon');
+  const name = displayName(d);
+  const t = parseTeam(d.comment);
+  if (t) {
+    const before = members.get(uid);
+    if (before && before.team === t) return;
+    setTeam(uid, name, t);
+    popup(`${name} rejoint la TEAM ${T[t].name} ${T[t].emoji}`, 540, t === 'F' ? 470 : 1010, T[t].color, 34);
+    sfx('join');
+    return;
+  }
+  const m = memberOf(d);
+  const now = performance.now();
+  if (lastComment.has(uid) && now - lastComment.get(uid) < CONFIG.commentCooldownMs) return;
+  lastComment.set(uid, now);
+  doAction(m.team, 'zombie', m.name);
+}
+
+function handleLike(d) {
+  const m = memberOf(d);
+  const n = Math.max(1, Math.min(500, Number(d.likeCount) || 1));
+  const team = T[m.team];
+  team.gauge += n;
+  while (team.gauge >= CONFIG.likesForWave) {
+    team.gauge -= CONFIG.likesForWave;
+    doAction(m.team, 'wave', m.name);
+  }
+}
+
+const streaks = new Map();
+function handleGift(d) {
+  const m = memberOf(d);
+  const unit = Math.max(1, Number(d.diamondCount) || 1);
+  const count = Math.max(1, Number(d.repeatCount) || 1);
+  let delta = count;
+  if (Number(d.giftType) === 1) { // cadeau en série : on applique seulement les nouveaux
+    const key = (d.uniqueId || m.name) + ':' + (d.giftId || d.giftName || unit);
+    const prev = streaks.get(key) || 0;
+    delta = count - prev;
+    if (d.repeatEnd) streaks.delete(key); else streaks.set(key, count);
+    if (delta <= 0) return;
+  }
+  m.coins += unit * delta;
+  const tier = CONFIG.giftTiers.find(g => unit >= g.min) || CONFIG.giftTiers[CONFIG.giftTiers.length - 1];
+  for (let i = 0; i < Math.min(delta, 50); i++) doAction(m.team, tier.action, m.name);
+}
+
+function routeEvent(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  const e = msg.event, d = msg.data || {};
+  if (e === 'chat') handleChat(d);
+  else if (e === 'gift') handleGift(d);
+  else if (e === 'like') handleLike(d);
+}
+// Pour brancher un autre outil : window.ZW.chat({uniqueId, nickname, comment}) etc.
+window.ZW = { chat: handleChat, gift: handleGift, like: handleLike, event: routeEvent, action: (t, a, n) => doAction(t, a, n || 'Test') };
+addEventListener('message', ev => { if (ev.data && ev.data.event) routeEvent(ev.data); });
+
+let ws = null;
+function connect() {
+  try { ws = new WebSocket(WS_URL); } catch (e) { setTimeout(connect, 3000); return; }
+  ws.onopen = () => { wsStatus = 'on'; };
+  ws.onclose = () => { wsStatus = 'off'; setTimeout(connect, 3000); };
+  ws.onerror = () => {};
+  ws.onmessage = ev => { let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; } routeEvent(msg); };
+}
+if (!params.has('nows')) connect();
+
+/* ---------- Actions de jeu ---------- */
+function countTeam(team) { let n = 0; for (const z of zombies) if (z.team === team) n++; return n; }
+
+function spawnZombie(team, type, name, x) {
+  if (countTeam(team) >= CONFIG.maxZombiesPerTeam && type !== 'boss') return null;
+  const L = LAYOUT[team], s = ZTYPES[type];
+  const z = {
+    team, type, name, hp: s.hp, maxHp: s.hp, dps: s.dps, speed: s.speed * rand(0.9, 1.1), r: s.r, skin: s.skin,
+    x: x ?? rand(70, W - 70), y: L.spawnY + rand(-6, 6), dir: L.dir, t: rand(0, 10), seed: rand(0, 6.28), attacking: false,
+  };
+  zombies.push(z);
+  burst(z.x, z.y, '#6d5a3a', 8, 120, 4);
+  return z;
+}
+
+function doAction(team, action, name) {
+  if (state !== 'play') { pending.push([team, action, name]); return; }
+  const tm = T[team], L = LAYOUT[team], col = tm.color;
+  const py = team === 'F' ? L.spawnY + 40 : L.spawnY - 40;
+  switch (action) {
+    case 'zombie': {
+      const z = spawnZombie(team, 'zombie', name);
+      if (z) sfx('spawn');
+      break;
+    }
+    case 'fast': {
+      const z = spawnZombie(team, 'fast', name);
+      if (z) { popup(`⚡ ${name}`, z.x, py, col, 26); sfx('spawn'); }
+      break;
+    }
+    case 'wave': {
+      const x0 = rand(200, W - 200);
+      for (let i = 0; i < CONFIG.waveSize; i++) spawnZombie(team, 'zombie', null, clamp(x0 + rand(-170, 170), 60, W - 60));
+      popup(`❤️ VAGUE DE LIKES !`, 540, py, col, 42);
+      sfx('wave');
+      break;
+    }
+    case 'turret': {
+      if (tm.turrets.length < CONFIG.maxTurrets) {
+        const x = TURRET_SLOTS[tm.turrets.length];
+        tm.turrets.push({ x, y: L.turretY, level: 1, cd: 0, angle: L.dir * Math.PI / 2, flash: 0 });
+        popup(`🔫 Tourelle de ${name}`, x, py, col, 30);
+        burst(x, L.turretY, col, 20, 200, 5);
+      } else {
+        const tur = tm.turrets.reduce((a, b) => (b.level < a.level ? b : a));
+        if (tur.level < 3) {
+          tur.level++;
+          popup(`⬆️ Tourelle niv. ${tur.level} (${name})`, tur.x, py, col, 30);
+          burst(tur.x, tur.y, '#ffd34d', 24, 220, 5);
+        } else { doAction(team, 'wall', name); return; }
+      }
+      sfx('build');
+      break;
+    }
+    case 'wall': {
+      tm.wall = Math.min(CONFIG.wallMax, Math.max(0, tm.wall) + CONFIG.wallPerGift);
+      popup(`🧱 Mur renforcé par ${name}`, 540, py, col, 32);
+      for (let i = 0; i < 6; i++) burst(rand(60, W - 60), L.wallY, '#c9b79c', 6, 160, 5);
+      sfx('build');
+      break;
+    }
+    case 'boss': {
+      const z = spawnZombie(team, 'boss', name, rand(200, W - 200));
+      setBanner(`💀 ZOMBIE GÉANT !`, `envoyé par ${name} pour la TEAM ${tm.name}`, col);
+      screenShake = Math.max(screenShake, 14);
+      if (z) burst(z.x, z.y, col, 40, 300, 7);
+      sfx('boss');
+      break;
+    }
+    case 'meteor': {
+      castMeteor(team, name);
+      break;
+    }
+  }
+}
+
+function castMeteor(team, name) {
+  const enemy = other(team);
+  const targets = zombies.filter(z => z.team === enemy);
+  setBanner(`☄️ PLUIE DE MÉTÉORES !`, `${name} nettoie le terrain pour la TEAM ${T[team].name}`, T[team].color);
+  sfx('meteorCast');
+  const n = 14;
+  for (let i = 0; i < n; i++) {
+    let tx, ty;
+    if (targets.length && i < targets.length) { const z = targets[(Math.random() * targets.length) | 0]; tx = z.x; ty = z.y; }
+    else { tx = rand(80, W - 80); ty = rand(LAYOUT.F.wallY + 40, LAYOUT.G.wallY - 40); }
+    meteors.push({ team, tx, ty, sx: tx + rand(-260, 260), sy: -120, t: -i * 0.09, dur: 0.75, last: i === n - 1 });
+  }
+}
+
+/* ---------- Effets ---------- */
+function burst(x, y, color, n, speed, size) {
+  if (particles.length > 1600) return;
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, Math.PI * 2), v = rand(speed * 0.3, speed);
+    particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rand(0.35, 0.8), max: 0.8, color, size: rand(size * 0.5, size), g: 300 });
+  }
+}
+function popup(text, x, y, color, size) {
+  if (popups.length > 40) popups.shift();
+  const dir = y < MID_Y ? 1 : -1;
+  let n = 0;
+  for (const p of popups) if (p.life > 1.4 && Math.abs(p.y0 - y) < 200) n++;
+  popups.push({ text, x: clamp(x, 160, W - 160), y: y + dir * (n % 4) * (size + 12), y0: y, color, size, life: 2.2, max: 2.2 });
+}
+function setBanner(text, sub, color) { banner = { text, sub, color, life: 3.2, max: 3.2 }; }
+
+/* ---------- Son (synthé simple, M pour couper) ---------- */
+let actx = null, soundOn = !params.has('mute'), lastSfx = {};
+function ensureAudio() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; } }
+  if (actx.state === 'suspended') actx.resume();
+}
+function tone(f0, f1, dur, type, vol) {
+  if (!actx || !soundOn) return;
+  const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+  o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(actx.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+function noise(dur, vol) {
+  if (!actx || !soundOn) return;
+  const len = Math.floor(actx.sampleRate * dur), buf = actx.createBuffer(1, len, actx.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const s = actx.createBufferSource(), g = actx.createGain(); g.gain.value = vol;
+  s.buffer = buf; s.connect(g).connect(actx.destination); s.start();
+}
+function sfx(kind) {
+  const now = performance.now();
+  if (now - (lastSfx[kind] || 0) < 90) return;
+  lastSfx[kind] = now;
+  switch (kind) {
+    case 'spawn': tone(140, 70, 0.18, 'sawtooth', 0.03); break;
+    case 'join': tone(520, 880, 0.12, 'triangle', 0.05); break;
+    case 'wave': tone(200, 90, 0.5, 'sawtooth', 0.06); break;
+    case 'build': tone(330, 660, 0.15, 'square', 0.04); tone(660, 990, 0.12, 'square', 0.03); break;
+    case 'shot': tone(900, 300, 0.05, 'square', 0.012); break;
+    case 'boss': tone(90, 40, 1.0, 'sawtooth', 0.12); noise(0.5, 0.08); break;
+    case 'meteorCast': tone(1200, 200, 0.8, 'sine', 0.06); break;
+    case 'boom': noise(0.4, 0.15); tone(80, 30, 0.4, 'sine', 0.15); break;
+    case 'hit': tone(120, 60, 0.08, 'square', 0.02); break;
+    case 'win': [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => tone(f, f, 0.25, 'triangle', 0.08), i * 150)); break;
+    case 'rage': tone(300, 900, 0.6, 'sawtooth', 0.07); break;
+  }
+}
+
+/* ---------- Mise à jour ---------- */
+function stopY(z) {
+  const e = T[other(z.team)], L = LAYOUT[e.id];
+  if (e.wall > 0) return { y: L.wallY + L.dir * (13 + z.r), target: 'wall' };
+  return { y: L.front + L.dir * z.r, target: 'base' };
+}
+function nearestEnemy(team, x, y, range) {
+  let best = null, bd = range * range;
+  for (const z of zombies) {
+    if (z.team === team || z.hp <= 0) continue;
+    const dx = z.x - x, dy = z.y - y, d2 = dx * dx + dy * dy;
+    if (d2 < bd) { bd = d2; best = z; }
+  }
+  return best;
+}
+function fire(team, x, y, target, dmg) {
+  bullets.push({ team, x, y, target, tx: target.x, ty: target.y, dmg, speed: 1400 });
+  sfx('shot');
+}
+
+function update(dt) {
+  // Zombies
+  for (const z of zombies) {
+    if (z.hp <= 0) continue;
+    z.t += dt;
+    z.attacking = false;
+    let foe = null, best = Infinity;
+    for (const e of zombies) {
+      if (e.team === z.team || e.hp <= 0) continue;
+      const dx = e.x - z.x, dy = e.y - z.y, d2 = dx * dx + dy * dy, lim = (z.r + e.r + 6) ** 2;
+      if (d2 < lim && d2 < best) { best = d2; foe = e; }
+    }
+    if (foe) {
+      foe.hp -= z.dps * dt; z.attacking = true;
+      if (Math.random() < dt * 4) burst((z.x + foe.x) / 2, (z.y + foe.y) / 2, '#9b1c1c', 3, 90, 3);
+      continue;
+    }
+    const s = stopY(z);
+    z.y += z.dir * z.speed * dt;
+    z.x += Math.sin(z.t * 1.3 + z.seed) * 8 * dt;
+    if ((z.dir > 0 && z.y >= s.y) || (z.dir < 0 && z.y <= s.y)) {
+      z.y = s.y; z.attacking = true;
+      const e = T[other(z.team)];
+      if (state !== 'play') continue;
+      if (s.target === 'wall') { e.wall -= z.dps * dt; if (e.wall <= 0) { e.wall = 0; burstWall(e.id); } }
+      else { e.hp -= z.dps * dt; e.shake = Math.min(10, e.shake + dt * 30); }
+      if (Math.random() < dt * 3) { burst(z.x, z.y + z.dir * z.r, s.target === 'wall' ? '#c9b79c' : e.color, 4, 120, 4); sfx('hit'); }
+    }
+  }
+  // Morts
+  const alive = [];
+  for (const z of zombies) {
+    if (z.hp > 0) alive.push(z);
+    else { burst(z.x, z.y, z.type === 'boss' ? '#ffffff' : '#5c8f3c', z.type === 'boss' ? 50 : 12, z.type === 'boss' ? 380 : 180, z.type === 'boss' ? 8 : 5); if (z.type === 'boss') { screenShake = Math.max(screenShake, 10); sfx('boom'); } }
+  }
+  zombies = alive;
+
+  // Tourelles et canons
+  for (const id of ['F', 'G']) {
+    const tm = T[id], L = LAYOUT[id], mul = tm.rage > 0 ? 2 : 1;
+    for (const tur of tm.turrets) {
+      tur.cd -= dt * mul; tur.flash = Math.max(0, tur.flash - dt);
+      const tg = nearestEnemy(id, tur.x, tur.y, 340 + tur.level * 30);
+      if (!tg) continue;
+      tur.angle = Math.atan2(tg.y - tur.y, tg.x - tur.x);
+      if (tur.cd <= 0) { tur.cd = 0.55; tur.flash = 0.06; fire(id, tur.x + Math.cos(tur.angle) * 30, tur.y + Math.sin(tur.angle) * 30, tg, 12 * (1 + 0.5 * (tur.level - 1))); }
+    }
+    tm.cannonCd -= dt * mul;
+    const cy = L.front + L.dir * 6;
+    const tg = nearestEnemy(id, 540, cy, 270);
+    if (tg) {
+      tm.cannonAngle = Math.atan2(tg.y - cy, tg.x - 540);
+      if (tm.cannonCd <= 0) { tm.cannonCd = 1.0; fire(id, 540 + Math.cos(tm.cannonAngle) * 34, cy + Math.sin(tm.cannonAngle) * 34, tg, 12); }
+    }
+    if (tm.rage > 0) tm.rage -= dt;
+    if (state === 'play' && !tm.rageUsed && tm.hp > 0 && tm.hp / CONFIG.baseHP < CONFIG.rageThreshold) {
+      tm.rageUsed = true; tm.rage = CONFIG.rageSeconds;
+      setBanner(`🔥 RAGE DES ${tm.name} !`, `Tirs x2 pendant ${CONFIG.rageSeconds} s — sauvez la base !`, tm.color);
+      sfx('rage');
+    }
+    tm.shake = Math.max(0, tm.shake - dt * 20);
+  }
+
+  // Balles
+  const nb = [];
+  for (const b of bullets) {
+    if (b.target && b.target.hp > 0) { b.tx = b.target.x; b.ty = b.target.y; }
+    const dx = b.tx - b.x, dy = b.ty - b.y, d = Math.hypot(dx, dy), step = b.speed * dt;
+    if (d <= step + 4) {
+      if (b.target && b.target.hp > 0) { b.target.hp -= b.dmg; burst(b.tx, b.ty, '#ffe08a', 4, 120, 3); }
+      continue;
+    }
+    b.x += dx / d * step; b.y += dy / d * step;
+    nb.push(b);
+  }
+  bullets = nb;
+
+  // Météores
+  const nm = [];
+  for (const m of meteors) {
+    m.t += dt;
+    if (m.t >= m.dur) {
+      const enemy = other(m.team);
+      for (const z of zombies) if (z.team === enemy && Math.hypot(z.x - m.tx, z.y - m.ty) < 140) z.hp = 0;
+      burst(m.tx, m.ty, '#ff8a1f', 30, 420, 8); burst(m.tx, m.ty, '#ffd34d', 20, 300, 6);
+      screenShake = Math.max(screenShake, 12); sfx('boom');
+      if (m.last) for (const z of zombies) if (z.team === enemy) z.hp = 0;
+      continue;
+    }
+    nm.push(m);
+  }
+  meteors = nm;
+
+  // Particules et textes
+  for (const p of particles) { p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.g * dt; p.vx *= 0.98; }
+  particles = particles.filter(p => p.life > 0);
+  for (const p of popups) { p.life -= dt; p.y += (p.y < MID_Y ? 1 : -1) * 20 * dt; }
+  popups = popups.filter(p => p.life > 0);
+  if (banner) { banner.life -= dt; if (banner.life <= 0) banner = null; }
+  screenShake = Math.max(0, screenShake - dt * 30);
+
+  // Manche
+  if (state === 'play') {
+    timeLeft -= dt;
+    for (const id of ['F', 'G']) if (T[id].hp <= 0) { T[id].hp = 0; endRound(other(id)); return; }
+    if (timeLeft <= 0) {
+      timeLeft = 0;
+      const f = T.F.hp, g = T.G.hp;
+      endRound(Math.abs(f - g) < 1 ? null : (f > g ? 'F' : 'G'));
+    }
+  } else {
+    winTimer -= dt;
+    if (winner && Math.random() < dt * 30) confetti();
+    if (winTimer <= 0) resetRound();
+  }
+}
+function burstWall(id) {
+  const L = LAYOUT[id];
+  for (let i = 0; i < 12; i++) burst(rand(60, W - 60), L.wallY, '#c9b79c', 8, 220, 6);
+  popup('🧱 MUR DÉTRUIT !', 540, L.wallY + L.dir * 60, T[id].color, 40);
+  sfx('boom');
+}
+function confetti() {
+  const c = T[winner].color;
+  particles.push({ x: rand(0, W), y: -20, vx: rand(-60, 60), vy: rand(100, 300), life: 4, max: 4, color: Math.random() < 0.6 ? c : '#ffffff', size: rand(6, 12), g: 60 });
+}
+function endRound(w) {
+  state = 'win'; winner = w; winTimer = CONFIG.winScreenSeconds;
+  if (w) T[w].score++;
+  banner = null; sfx('win');
+}
+function resetRound() {
+  for (const id of ['F', 'G']) {
+    const t = T[id];
+    t.hp = CONFIG.baseHP; t.wall = 0; t.turrets = []; t.gauge = 0; t.rage = 0; t.rageUsed = false; t.shake = 0;
+  }
+  zombies = []; bullets = []; meteors = [];
+  timeLeft = CONFIG.roundSeconds; state = 'play'; winner = null;
+  setBanner('⚔️ NOUVELLE MANCHE !', 'Écris F ou G pour choisir ta team', '#ffffff');
+  const q = pending; pending = [];
+  for (const a of q) doAction(a[0], a[1], a[2]);
+}
+
+/* ---------- Dessin ---------- */
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function text(str, x, y, size, color, align = 'center', stroke = 6, weight = 800) {
+  ctx.font = font(size, weight); ctx.textAlign = align; ctx.textBaseline = 'middle';
+  if (stroke) { ctx.lineJoin = 'round'; ctx.lineWidth = stroke; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(str, x, y); }
+  ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+function bar(x, y, w, h, frac, color, bg = 'rgba(0,0,0,0.5)') {
+  rr(x, y, w, h, h / 2); ctx.fillStyle = bg; ctx.fill();
+  if (frac > 0) { rr(x, y, Math.max(h, w * clamp(frac, 0, 1)), h, h / 2); ctx.fillStyle = color; ctx.fill(); }
+}
+
+function drawField() {
+  if (!TRANSPARENT) {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#2a0f22'); g.addColorStop(0.38, '#15131c'); g.addColorStop(0.62, '#11161f'); g.addColorStop(1, '#0a1a2c');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  // terrain
+  const top = LAYOUT.F.baseTop - 10, bot = LAYOUT.G.baseBot + 10;
+  ctx.fillStyle = TRANSPARENT ? 'rgba(20,20,28,0.55)' : '#1b1d24';
+  ctx.fillRect(0, top, W, bot - top);
+  ctx.fillStyle = 'rgba(255,79,163,0.07)'; ctx.fillRect(0, top, W, MID_Y - top);
+  ctx.fillStyle = 'rgba(63,169,255,0.07)'; ctx.fillRect(0, MID_Y, W, bot - MID_Y);
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 2;
+  for (let x = 0; x <= W; x += 90) { ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bot); ctx.stroke(); }
+  for (let y = top; y <= bot; y += 90) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.setLineDash([24, 18]); ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(0, MID_Y); ctx.lineTo(W, MID_Y); ctx.stroke(); ctx.setLineDash([]);
+  text('⚔️', 540, MID_Y, 54, '#fff', 'center', 0);
+}
+
+function drawBase(id) {
+  const tm = T[id], L = LAYOUT[id];
+  const sx = tm.shake ? rand(-tm.shake, tm.shake) : 0, sy = tm.shake ? rand(-tm.shake, tm.shake) : 0;
+  ctx.save(); ctx.translate(sx, sy);
+  const x = 24, y = L.baseTop, w = W - 48, h = L.baseBot - L.baseTop;
+  // créneaux côté terrain
+  ctx.fillStyle = tm.deep;
+  for (let cx = x + 10; cx < x + w - 40; cx += 70) {
+    const cy = L.dir > 0 ? L.baseBot - 4 : L.baseTop - 16;
+    ctx.fillRect(cx, cy, 40, 20);
+  }
+  const g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, tm.color); g.addColorStop(1, tm.deep);
+  rr(x, y, w, h, 26); ctx.fillStyle = g; ctx.fill();
+  if (tm.rage > 0) {
+    ctx.lineWidth = 8 + Math.sin(performance.now() / 80) * 4; ctx.strokeStyle = '#ffb020'; ctx.stroke();
+  } else { ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.stroke(); }
+  const cy = y + h / 2;
+  text(`${tm.emoji} TEAM ${tm.name}`, 56, cy - 34, 42, '#fff', 'left', 6);
+  const frac = tm.hp / CONFIG.baseHP;
+  bar(56, cy + 2, 560, 32, frac, frac > 0.5 ? '#5dff8a' : frac > 0.2 ? '#ffd34d' : '#ff4a4a');
+  text(`${Math.ceil(frac * 100)} %`, 336, cy + 18, 24, '#fff', 'center', 4);
+  bar(56, cy + 44, 560, 12, tm.gauge / CONFIG.likesForWave, '#ff6b9a');
+  text(`❤️ ${tm.gauge}/${CONFIG.likesForWave}`, 628, cy + 50, 18, '#fff', 'left', 3, 700);
+  // top soutiens
+  const top = [...members.values()].filter(m => m.team === id && m.coins > 0).sort((a, b) => b.coins - a.coins).slice(0, 3);
+  text('🏆 Top soutiens', 760, y + 26, 22, '#fff', 'left', 4, 800);
+  const medals = ['🥇', '🥈', '🥉'];
+  if (!top.length) text('envoie un cadeau !', 760, y + 66, 22, 'rgba(255,255,255,0.8)', 'left', 4, 600);
+  top.forEach((m, i) => text(`${medals[i]} ${m.name} · ${m.coins}🪙`, 760, y + 62 + i * 30, 22, '#fff', 'left', 4, 700));
+  ctx.restore();
+  // canon de base
+  const ccy = L.front + L.dir * 6;
+  ctx.save(); ctx.translate(540, ccy); ctx.rotate(tm.cannonAngle);
+  ctx.fillStyle = '#2b2b33'; ctx.fillRect(0, -10, 40, 20); ctx.restore();
+  ctx.beginPath(); ctx.arc(540, ccy, 22, 0, Math.PI * 2); ctx.fillStyle = tm.deep; ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = tm.color; ctx.stroke();
+}
+
+function drawWall(id) {
+  const tm = T[id], L = LAYOUT[id];
+  if (tm.wall <= 0) return;
+  const frac = tm.wall / CONFIG.wallMax, y = L.wallY - 13;
+  ctx.save(); ctx.globalAlpha = 0.55 + 0.45 * Math.min(1, frac * 2);
+  for (let row = 0; row < 2; row++) {
+    for (let bx = (row ? -30 : 0); bx < W; bx += 60) {
+      ctx.fillStyle = (Math.floor(bx / 60) + row) % 2 ? '#8b7a66' : '#a08c74';
+      ctx.fillRect(bx + 2, y + row * 13 + 1, 56, 11);
+    }
+  }
+  ctx.fillStyle = tm.color; ctx.globalAlpha = 0.35; ctx.fillRect(0, y, W, 26);
+  ctx.restore();
+  text(`🧱 ${Math.ceil(tm.wall)}`, W - 20, L.wallY + L.dir * 30, 22, '#fff', 'right', 4, 700);
+}
+
+function drawTurret(tm, tur) {
+  ctx.save(); ctx.translate(tur.x, tur.y);
+  ctx.beginPath(); ctx.arc(0, 0, 24, 0, Math.PI * 2); ctx.fillStyle = '#2b2b33'; ctx.fill();
+  ctx.lineWidth = 5; ctx.strokeStyle = tm.color; ctx.stroke();
+  ctx.rotate(tur.angle);
+  ctx.fillStyle = '#d9d9e0'; ctx.fillRect(4, -7, 34, 14);
+  if (tur.flash > 0) { ctx.beginPath(); ctx.arc(42, 0, 11, 0, Math.PI * 2); ctx.fillStyle = '#ffe08a'; ctx.fill(); }
+  ctx.restore();
+  if (tur.level > 1) text('★'.repeat(tur.level - 1), tur.x, tur.y + (tm.id === 'F' ? -32 : 32), 18, '#ffd34d', 'center', 3);
+}
+
+function drawZombie(z) {
+  const tm = T[z.team], r = z.r, wob = Math.sin(z.t * (z.type === 'fast' ? 14 : 8) + z.seed);
+  ctx.save(); ctx.translate(z.x, z.y);
+  ctx.beginPath(); ctx.ellipse(0, r * 0.7, r * 0.9, r * 0.35, 0, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill();
+  // bras tendus vers l'ennemi
+  ctx.strokeStyle = z.skin; ctx.lineCap = 'round'; ctx.lineWidth = r * 0.38;
+  const reach = r * (z.attacking ? 1.5 + wob * 0.2 : 1.3);
+  ctx.beginPath(); ctx.moveTo(-r * 0.55, 0); ctx.lineTo(-r * 0.65 + wob * 3, z.dir * reach); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(r * 0.55, 0); ctx.lineTo(r * 0.65 - wob * 3, z.dir * reach); ctx.stroke();
+  // corps
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fillStyle = z.skin; ctx.fill();
+  ctx.lineWidth = Math.max(3, r * 0.22); ctx.strokeStyle = tm.color; ctx.stroke();
+  // yeux et bouche
+  const ey = z.dir * r * 0.25;
+  ctx.fillStyle = z.type === 'boss' ? '#ff2020' : '#fff';
+  ctx.beginPath(); ctx.arc(-r * 0.35, ey, r * 0.2, 0, Math.PI * 2); ctx.arc(r * 0.35, ey, r * 0.2, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#300';
+  ctx.beginPath(); ctx.arc(-r * 0.35, ey + z.dir * r * 0.05, r * 0.09, 0, Math.PI * 2); ctx.arc(r * 0.35, ey + z.dir * r * 0.05, r * 0.09, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#3a0d0d'; ctx.fillRect(-r * 0.3, z.dir * r * 0.55 - r * 0.08, r * 0.6, r * 0.16);
+  if (z.type === 'boss') {
+    ctx.fillStyle = '#ffd34d';
+    const hy = -z.dir * r * 0.85;
+    ctx.beginPath(); ctx.moveTo(-r * 0.6, hy); ctx.lineTo(-r * 0.35, hy - z.dir * r * 0.6); ctx.lineTo(-r * 0.1, hy); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(r * 0.1, hy); ctx.lineTo(r * 0.35, hy - z.dir * r * 0.6); ctx.lineTo(r * 0.6, hy); ctx.fill();
+  }
+  ctx.restore();
+  const labelY = z.y - z.dir * (r + 16);
+  if (z.hp < z.maxHp) bar(z.x - r, z.y - z.dir * (r + 6) - 3, r * 2, 6, z.hp / z.maxHp, '#ff4a4a');
+  if (z.type === 'boss') text(`💀 ${z.name || 'BOSS'}`, z.x, labelY - z.dir * 8, 24, tm.color, 'center', 5);
+  else if (z.name) text(z.name, z.x, labelY, 17, '#fff', 'center', 4, 700);
+}
+
+function drawHeader() {
+  const sc = `${T.F.emoji} FILLES  ${T.F.score} — ${T.G.score}  GARÇONS ${T.G.emoji}`;
+  ctx.font = font(44); const w = ctx.measureText(sc).width + 70;
+  rr(540 - w / 2, 22, w, 72, 36); ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.stroke();
+  text(sc, 540, 58, 44, '#fff', 'center', 0);
+  const m = Math.floor(timeLeft / 60), s = Math.floor(timeLeft % 60);
+  text(`⏱ ${m}:${String(s).padStart(2, '0')}`, 540, 120, 34, timeLeft < 30 && state === 'play' ? '#ff6b6b' : '#fff', 'center', 5);
+}
+
+function drawLegend() {
+  const y = 1348, h = 196;
+  rr(24, y, W - 48, h, 24); ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.stroke();
+  text('🎁 Tes cadeaux = des pouvoirs pour ta team', 540, y + 30, 28, '#fff', 'center', 0);
+  const info = { fast: ['⚡', 'Zombie rapide'], turret: ['🔫', 'Tourelle'], wall: ['🧱', 'Mur'], boss: ['💀', 'Zombie géant'], meteor: ['☄️', 'Météores'] };
+  const tiers = [...CONFIG.giftTiers].sort((a, b) => a.min - b.min);
+  const cw = (W - 48) / tiers.length;
+  tiers.forEach((t, i) => {
+    const cx = 24 + cw * i + cw / 2, [em, label] = info[t.action] || ['❓', t.action];
+    text(em, cx, y + 80, 44, '#fff', 'center', 0);
+    text(`${t.min}🪙`, cx, y + 122, 26, '#ffd34d', 'center', 4);
+    text(label, cx, y + 152, 20, '#fff', 'center', 3, 700);
+  });
+  text(`💬 1 commentaire = 1 zombie   ·   ❤️ ${CONFIG.likesForWave} likes = une vague`, 540, y + h - 18, 20, 'rgba(255,255,255,0.85)', 'center', 0, 600);
+  // rejoindre
+  const pulse = 1 + Math.sin(performance.now() / 300) * 0.03;
+  ctx.save(); ctx.translate(540, 1590); ctx.scale(pulse, pulse);
+  text('Écris  F 👧  ou  G 👦  dans le chat !', 0, 0, 40, '#fff', 'center', 7);
+  ctx.restore();
+  text(`👧 ${T.F.members} joueuses   ·   👦 ${T.G.members} joueurs`, 540, 1642, 28, 'rgba(255,255,255,0.9)', 'center', 5, 700);
+  ctx.beginPath(); ctx.arc(W - 200, 1900, 7, 0, Math.PI * 2); ctx.fillStyle = wsStatus === 'on' ? '#4dff7a' : '#ff5050'; ctx.fill();
+  text(wsStatus === 'on' ? 'TikFinity connecté' : (demo ? 'mode démo' : 'TikFinity hors ligne'), W - 186, 1900, 16, 'rgba(255,255,255,0.6)', 'left', 0, 600);
+}
+
+function drawBanner() {
+  if (!banner) return;
+  const a = Math.min(1, banner.life / 0.4, (banner.max - banner.life) / 0.2 + 0.2);
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1);
+  rr(40, MID_Y - 90, W - 80, 180, 30); ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fill();
+  ctx.lineWidth = 6; ctx.strokeStyle = banner.color; ctx.stroke();
+  text(banner.text, 540, MID_Y - 30, 58, banner.color, 'center', 7);
+  text(banner.sub, 540, MID_Y + 42, 28, '#fff', 'center', 5, 700);
+  ctx.restore();
+}
+
+function drawWin() {
+  if (state !== 'win') return;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
+  if (winner) {
+    const tm = T[winner];
+    text('🏆', 540, 620, 160, '#fff', 'center', 0);
+    text(`TEAM ${tm.name}`, 540, 790, 96, tm.color, 'center', 10);
+    text('GAGNE LA MANCHE !', 540, 890, 64, '#fff', 'center', 8);
+  } else {
+    text('🤝', 540, 620, 160, '#fff', 'center', 0);
+    text('ÉGALITÉ !', 540, 820, 96, '#fff', 'center', 10);
+  }
+  text(`FILLES ${T.F.score} — ${T.G.score} GARÇONS`, 540, 1000, 48, '#fff', 'center', 6);
+  text(`Nouvelle manche dans ${Math.ceil(winTimer)}…`, 540, 1080, 36, 'rgba(255,255,255,0.9)', 'center', 5, 700);
+}
+
+function drawHelp() {
+  if (!showHelp) return;
+  const lines = [
+    'MODE TEST (clavier)  —  H : masquer',
+    'Filles :  1 zombie · 2 rapide · 3 tourelle',
+    '          4 mur · 5 géant · 6 météores · 7 +50 likes',
+    'Garçons : A zombie · Z rapide · E tourelle',
+    '          R mur · T géant · Y météores · U +50 likes',
+    'D : démo auto on/off · N : nouvelle manche · M : son',
+  ];
+  const y0 = 470;
+  rr(40, y0, W - 80, 40 + lines.length * 42, 20); ctx.fillStyle = 'rgba(0,0,0,0.78)'; ctx.fill();
+  lines.forEach((l, i) => text(l, 70, y0 + 40 + i * 42, 26, i ? '#fff' : '#ffd34d', 'left', 0, 700));
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  if (screenShake > 0) ctx.translate(rand(-screenShake, screenShake), rand(-screenShake, screenShake));
+  drawField();
+  drawWall('F'); drawWall('G');
+  drawBase('F'); drawBase('G');
+  for (const id of ['F', 'G']) for (const tur of T[id].turrets) drawTurret(T[id], tur);
+  for (const z of zombies) drawZombie(z);
+  ctx.fillStyle = '#ffe08a';
+  for (const b of bullets) { ctx.beginPath(); ctx.arc(b.x, b.y, 6, 0, Math.PI * 2); ctx.fill(); }
+  for (const m of meteors) {
+    if (m.t < 0) continue;
+    const k = m.t / m.dur, x = m.sx + (m.tx - m.sx) * k, y = m.sy + (m.ty - m.sy) * k;
+    ctx.strokeStyle = 'rgba(255,140,30,0.6)'; ctx.lineWidth = 18; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x - (m.tx - m.sx) * 0.15, y - (m.ty - m.sy) * 0.15); ctx.lineTo(x, y); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI * 2); ctx.fillStyle = '#ffd34d'; ctx.fill();
+    ctx.beginPath(); ctx.arc(m.tx, m.ty, 140 * k, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(255,80,30,0.35)'; ctx.lineWidth = 4; ctx.stroke();
+  }
+  for (const p of particles) { ctx.globalAlpha = clamp(p.life / p.max * 1.5, 0, 1); ctx.fillStyle = p.color; ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size); }
+  ctx.globalAlpha = 1;
+  for (const p of popups) { ctx.globalAlpha = clamp(p.life / 0.5, 0, 1); text(p.text, p.x, p.y, p.size, p.color, 'center', 6); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  drawHeader();
+  drawLegend();
+  drawBanner();
+  drawHelp();
+  drawWin();
+}
+
+/* ---------- Mode test / démo ---------- */
+const FAKE = ['Léa', 'Inès', 'Jade', 'Chloé', 'Manon', 'Sarah', 'Lina', 'Emma', 'Yasmine', 'Zoé', 'Karim', 'Lucas', 'Nathan', 'Yanis', 'Hugo', 'Adam', 'Moussa', 'Théo', 'Rayan', 'Enzo'];
+let testN = 0;
+function testUser(team) {
+  const name = FAKE[(Math.random() * 10 | 0) + (team === 'F' ? 0 : 10)] + '_' + (++testN % 90 + 10);
+  const d = { uniqueId: 'test_' + name, nickname: name };
+  setTeam(d.uniqueId, name, team);
+  return d;
+}
+const KEYS = {
+  '1': ['F', 'chat'], '2': ['F', 1], '3': ['F', 5], '4': ['F', 30], '5': ['F', 100], '6': ['F', 500], '7': ['F', 'like'],
+  'q': ['G', 'chat'], 'w': ['G', 1], 'e': ['G', 5], 'r': ['G', 30], 't': ['G', 100], 'y': ['G', 500], 'u': ['G', 'like'],
+  'a': ['G', 'chat'], 'z': ['G', 1], // claviers AZERTY
+};
+function simulate(team, what) {
+  const d = testUser(team);
+  if (what === 'chat') handleChat({ ...d, comment: 'go go go' });
+  else if (what === 'like') handleLike({ ...d, likeCount: 50 });
+  else handleGift({ ...d, diamondCount: what, repeatCount: 1, giftType: 0, giftId: what });
+}
+addEventListener('keydown', e => {
+  ensureAudio();
+  const digit = /^(Digit|Numpad)([1-7])$/.exec(e.code || '');
+  const k = digit ? digit[2] : e.key.toLowerCase();
+  if (KEYS[k]) { simulate(KEYS[k][0], KEYS[k][1]); return; }
+  if (k === 'h') showHelp = !showHelp;
+  else if (k === 'd') demo = !demo;
+  else if (k === 'n') resetRound();
+  else if (k === 'm') soundOn = !soundOn;
+});
+addEventListener('pointerdown', ensureAudio);
+
+let demoClock = 0;
+function demoTick(dt) {
+  if (!demo) return;
+  demoClock -= dt;
+  while (demoClock <= 0) {
+    demoClock += rand(0.12, 0.45);
+    const team = Math.random() < 0.5 ? 'F' : 'G', r = Math.random();
+    if (r < 0.62) simulate(team, 'chat');
+    else if (r < 0.80) simulate(team, 'like');
+    else if (r < 0.93) simulate(team, 1);
+    else if (r < 0.975) simulate(team, Math.random() < 0.5 ? 5 : 30);
+    else if (r < 0.995) simulate(team, 100);
+    else simulate(team, 500);
+  }
+}
+
+/* ---------- Boucle ---------- */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  demoTick(dt);
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+ensureAudio();
+setBanner('⚔️ ZOMBIE WAR', 'Écris F ou G pour choisir ta team', '#ffffff');
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
