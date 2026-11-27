@@ -80,22 +80,29 @@ def background(tl):
 TR = json.load(open(os.environ["TRAINEE"])) if os.environ.get("TRAINEE") else None
 from PIL import ImageDraw
 def trail_layer(fi):
+    """trainee de petites billes : la bille seme des perles qui restent en place puis s'eteignent"""
     d = TR["frames"][fi]; M = np.array(d["cam"]); k = TR["lens"] / TR["sensor"] * H
-    pts = np.array(d["past"]); P = (M[:3, :3] @ pts.T).T + M[:3, 3]
-    n = len(pts); outer = Image.new("L", (W, H), 0); core = Image.new("L", (W, H), 0)
-    do, dc = ImageDraw.Draw(outer), ImageDraw.Draw(core)
-    for j in range(n - 1, -1, -1):
-        x, y, z = P[j]
+    pts = np.array(d["past"]); n = len(pts); NF = len(TR["frames"])
+    g0 = int(round((OFF * 30 + fi) * 2))                  # indice global des perles (60 par seconde)
+    rgbI = Image.new("RGB", (W, H), (0, 0, 0)); aI = Image.new("L", (W, H), 0)
+    dr, da = ImageDraw.Draw(rgbI), ImageDraw.Draw(aI)
+    for j in range(n - 1, 1, -1):
+        g = (g0 - j) % (NF * 2); rg = np.random.default_rng(g)
+        if rg.random() < 0.25: continue                    # quelques trous : des perles, pas un trait
+        off = (rg.random(3) - 0.5) * 0.45
+        x, y, z = M[:3, :3] @ (pts[j] + off) + M[:3, 3]
         if z > -0.5: continue
-        u = j / n; px = W / 2 + k * x / -z; py = H / 2 - k * y / -z; rb = k * TR["br"] / -z
-        r = rb * 0.95 * (1 - u) ** 0.7; a = int(255 * (1 - u) ** 1.3)
-        do.ellipse((px - r, py - r, px + r, py + r), fill=a)
-        rc = r * 0.42; dc.ellipse((px - rc, py - rc, px + rc, py + rc), fill=a)
-    o_ = np.asarray(outer.filter(ImageFilter.GaussianBlur(2.5))).astype(np.float32)[..., None] / 255
-    c_ = np.asarray(core.filter(ImageFilter.GaussianBlur(1.5))).astype(np.float32)[..., None] / 255
-    col = np.array(d["col"], np.float32)
-    rgb = col * (1 - c_) + np.array([1, 1, 1], np.float32) * c_
-    return rgb, np.clip(o_ * 0.9 + c_ * 0.1, 0, 1)
+        u = j / n; px = W / 2 + k * x / -z; py = H / 2 - k * y / -z
+        r = k * TR["br"] / -z * (0.22 + 0.3 * rg.random()) * (1 - u) ** 0.5
+        if r < 0.8: continue
+        al = int(255 * min(1, (1 - u) * 1.4))
+        col = np.array(TR["frames"][(fi - j // 2) % NF]["col"])          # couleur de la bille quand la perle est nee
+        c1 = tuple(int(255 * min(1, v * 0.85 + 0.1)) for v in col); c2 = tuple(int(255 * min(1, v * 0.4 + 0.6)) for v in col)
+        dr.ellipse((px - r, py - r, px + r, py + r), fill=c1); da.ellipse((px - r, py - r, px + r, py + r), fill=al)
+        h = r * 0.45; dr.ellipse((px - r * 0.35 - h, py - r * 0.35 - h, px - r * 0.35 + h, py - r * 0.35 + h), fill=c2)
+    rgb = np.asarray(rgbI.filter(ImageFilter.GaussianBlur(0.7))).astype(np.float32) / 255
+    a = np.asarray(aI.filter(ImageFilter.GaussianBlur(0.7))).astype(np.float32)[..., None] / 255
+    return rgb, a
 
 files = sorted(glob.glob(os.path.join(src, "*.png")))
 if len(sys.argv) > 6:            # apercu : quelques images seulement

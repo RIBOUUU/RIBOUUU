@@ -540,9 +540,9 @@ if os.environ.get("EXPORT_BILLE"):       # positions de la bille + camera image 
     rows = []
     for f in range(NV):
         sc.frame_set(F0 + f); M = cam.matrix_world.inverted()
-        rows.append(dict(f=f, cam=[list(r) for r in M], past=[list(ball_pos((F0 + f) / FPS - j / 120)) for j in range(0, 72)],
+        rows.append(dict(f=f, cam=[list(r) for r in M], past=[list(ball_pos((F0 + f) / FPS - j / 60)) for j in range(0, 90)],
                          col=ball_col(loc((F0 + f) / FPS))))
-    json.dump(dict(lens=cam_d.lens, sensor=cam_d.sensor_height, br=BR, dt=1 / 120, frames=rows), open(os.environ["EXPORT_BILLE"], "w"))
+    json.dump(dict(lens=cam_d.lens, sensor=cam_d.sensor_height, br=BR, dt=1 / 60, frames=rows), open(os.environ["EXPORT_BILLE"], "w"))
     print("export ok", flush=True); sys.exit(0)
 sc.render.use_compositing = False; sc.render.use_sequencer = False
 # acceleration : modificateurs figes une fois pour toutes + donnees persistantes entre les images
