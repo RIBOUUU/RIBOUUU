@@ -284,10 +284,20 @@ def character(c, x, gy, s=1.0, pose=None, t=0.0):
     top = hip + 150
     c.poly([L(-46, top), L(46, top), L(52, hip + 8), L(-52, hip + 8)], col)
     c.poly([L(-52, hip + 22), L(52, hip + 22), L(52, hip - 2), L(-52, hip - 2)], dcol)
-    c.poly([L(-28, hip + 70), L(28, hip + 70), L(28, hip + 36), L(-28, hip + 36)], dcol)
-    for sgn in (-1, 1):
-        c.line([L(sgn * 12, top - 4), L(sgn * 14, top - 58)], (245, 240, 230), 4 * s)
-    hc = L(0, top); c.ell(hc[0], hc[1], 50 * s, 24 * s, fill=dcol)
+    outfit = P.get('outfit', 'hoodie')
+    if outfit == 'hoodie':
+        c.poly([L(-28, hip + 70), L(28, hip + 70), L(28, hip + 36), L(-28, hip + 36)], dcol)
+        for sgn in (-1, 1):
+            c.line([L(sgn * 12, top - 4), L(sgn * 14, top - 58)], (245, 240, 230), 4 * s)
+        hc = L(0, top); c.ell(hc[0], hc[1], 50 * s, 24 * s, fill=dcol)
+    elif outfit == 'dress':
+        b = L(0, top - 60); c.ell(b[0], b[1], 7 * s, fill=(250, 210, 80))
+        hc = L(0, top); c.ell(hc[0], hc[1], 30 * s, 14 * s, fill=dcol)
+    elif outfit == 'shirt':
+        for sgn in (-1, 1):
+            c.poly([L(0, top - 30), L(sgn * 30, top + 4), L(sgn * 6, top + 4)], (235, 238, 242))
+        for k in range(3):
+            b = L(0, top - 50 - k * 34); c.ell(b[0], b[1], 4 * s, fill=(30, 60, 110))
     if P.get('glowchest'):
         gc = L(0, top - 50); c.glow(gc[0], gc[1], 120 * s, 120 * s, P['glowchest'], 0.9)
     # bras
@@ -304,11 +314,23 @@ def character(c, x, gy, s=1.0, pose=None, t=0.0):
     # cou + tête
     n = L(0, top + 6); c.ell(n[0], n[1] - 6 * s, 9 * s, 12 * s, fill=BLK)
     hx, hy = L(0, top + 68); r = 62 * s
-    c.ell(hx, hy, r, fill=BLK)
     hair = P.get('hair', (120, 40, 36))
-    c.d.chord([(hx - r * 0.95) * S, (hy - r * 1.08) * S, (hx + r * 0.95) * S, (hy - r * 0.2) * S], 190, 350, fill=hair)
-    c.ell(hx + r * 0.45 * flip, hy - r * 0.93, r * 0.3, r * 0.22, fill=hair)
+    if P.get('longhair'):
+        c.rect(hx - r * 1.12, hy - r * 0.9, hx + r * 1.12, hy + r * 1.55, fill=hair, r=r * 0.7)
+    c.ell(hx, hy, r, fill=BLK)
+    if P.get('longhair'):
+        c.d.chord([(hx - r * 1.08) * S, (hy - r * 1.18) * S, (hx + r * 1.08) * S, (hy + r * 0.1) * S], 180, 360, fill=hair)
+        c.ell(hx - r * 0.5, hy - r * 0.55, r * 0.55, r * 0.35, fill=hair)
+    elif P.get('flathair'):
+        c.d.chord([(hx - r * 1.02) * S, (hy - r * 1.12) * S, (hx + r * 1.02) * S, (hy - r * 0.05) * S], 180, 360, fill=hair)
+    else:
+        c.d.chord([(hx - r * 0.95) * S, (hy - r * 1.08) * S, (hx + r * 0.95) * S, (hy - r * 0.2) * S], 190, 350, fill=hair)
+        c.ell(hx + r * 0.45 * flip, hy - r * 0.93, r * 0.3, r * 0.22, fill=hair)
+    if P.get('earrings'):
+        for sgn in (-1, 1): c.ell(hx + sgn * r * 1.0, hy + r * 0.25, 7 * s, fill=(250, 210, 80))
     face(c, hx, hy, s, P.get('mood', 'happy'), P.get('blink', False), P.get('look', (3, 2)), P.get('eyes_red', False))
+    if P.get('mustache'):
+        c.d.chord([(hx - r * 0.4) * S, (hy + r * 0.22) * S, (hx + r * 0.4) * S, (hy + r * 0.62) * S], 180, 360, fill=hair)
     if P.get('mask'):
         c.rect(hx - 30 * s, hy + 14 * s, hx + 30 * s, hy + 50 * s, fill=(250, 210, 60), r=12 * s)
     return dict(head=(hx, hy, r), hands=hands, chest=L(0, top - 50), hip=L(0, hip), knees=(L(-30, hip * 0.5), L(30, hip * 0.5)))
