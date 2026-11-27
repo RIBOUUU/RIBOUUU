@@ -28,13 +28,13 @@ hook_txt = ",".join([txt("QUI VA GAGNER ?", 300, 104, 0.05, 2.4, "white")])
 cta_txt = ",".join([txt("LA SUITE ?", 1340, 92, DUR - 2.0, DUR + 1, "white"),
                     txt("ABONNE-TOI ↓", 1460, 104, DUR - 1.8, DUR + 1, "#FFD84A")])
 
-fc = (f"[0:v]trim={T0}:{T1},setpts=PTS-STARTPTS,{teaser_txt},"
+fc = (f"[0:v]setpts=PTS-STARTPTS,{teaser_txt},"
       f"fade=t=out:st={T1 - T0 - 0.12}:d=0.12:color=white[tv];"
-      f"[0:a]atrim={T0}:{T1},asetpts=PTS-STARTPTS,afade=t=out:st={T1 - T0 - 0.1}:d=0.1[ta];"
-      f"[0:v]setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.12:color=white,{hook_txt},{cta_txt}[mv];"
-      f"[0:a]asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.05[ma];"
+      f"[0:a]asetpts=PTS-STARTPTS,afade=t=out:st={T1 - T0 - 0.1}:d=0.1[ta];"
+      f"[1:v]setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.12:color=white,{hook_txt},{cta_txt}[mv];"
+      f"[1:a]asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.05[ma];"
       f"[tv][ta][mv][ma]concat=n=2:v=1:a=1[v][a]")
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", BASE, "-filter_complex", fc, "-map", "[v]", "-map", "[a]", *VENC, *AENC, OUT], check=True)
+subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(T0), "-t", str(T1 - T0), "-i", BASE, "-i", BASE, "-filter_complex", fc, "-map", "[v]", "-map", "[a]", *VENC, *AENC, OUT], check=True)
 
 # ---------- miniatures ----------
 def grab(t, path):
