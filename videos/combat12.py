@@ -5,7 +5,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 AUDIO, OUT = sys.argv[1], sys.argv[2]
-W, H, FPS = 540, 960, 30
+K = int(os.environ.get('K', '1')); W, H, FPS = 540*K, 960*K, int(os.environ.get('FPS', '30'))
+PF = 30/FPS   # les réglages « par image » ont été calés à 30 i/s
 START, DUR = 28.0, 34.0
 random.seed(11); np.random.seed(11)
 
@@ -574,8 +575,8 @@ def sky_state(t):
 STARS = [(random.uniform(-1.6, 1.6), random.uniform(0.08, 1.2), random.uniform(0, 6)) for _ in range(160)]
 CLOUDS = [[random.uniform(-1.6, 1.6), random.uniform(0.12, 0.7), random.uniform(40, 90)] for _ in range(9)]
 try:
-    FONT = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 46)
-    FONTKO = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 120)
+    FONT = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 46*K)
+    FONTKO = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 120*K)
 except OSError:
     FONT = ImageFont.load_default()
 
@@ -658,14 +659,18 @@ DMG.append((TF + 1.0, LOS, 1000))   # le rayon final vide la barre
 def hp_at(i_, ta_): return max(0.0, 100 - sum(c_ for a_, b_, c_ in DMG if b_ == i_ and a_ <= ta_))
 def hit_recent(i_, ta_): return any(b_ == i_ and 0 <= ta_ - a_ < 0.25 for a_, b_, c_ in DMG)
 try:
-    FONTHUD = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+    FONTHUD = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18*K)
 except OSError:
     FONTHUD = ImageFont.load_default()
 trail_hp = [100.0, 100.0]
 
 ff = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
                        "-r", str(FPS), "-i", "-", "-ss", str(START), "-t", str(DUR), "-i", AUDIO, "-af", f"atempo={SLOW}",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-c:a", "aac", "-shortest", OUT],
+                       *(["-c:v", "libx264", "-preset", "slow", "-profile:v", "high", "-pix_fmt", "yuv420p", "-crf", "16",
+                          "-maxrate", "30M", "-bufsize", "60M", "-g", str(FPS//2), "-bf", "2", "-coder", "1",
+                          "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-movflags", "+faststart",
+                          "-c:a", "aac", "-b:a", "384k", "-ar", "48000", "-ac", "2"] if K > 1 else
+                         ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-c:a", "aac"]), "-shortest", OUT],
                       stdin=subprocess.PIPE)
 bodies = [Body(P["tuck"]), Body(P["stance"])]
 feet = [dict(anc=[None, None], stp=[None, None], last=[0.0, 0.0]) for _ in range(2)]
@@ -738,9 +743,9 @@ def rig(i, st, ta, dta):
     fs["last"] = [w[9][0], w[11][0]]
     return w
 
-for f in range(int(DUR*FPS/SLOW)):
+for f in range(min(int(DUR*FPS/SLOW), int(os.environ.get('MAXF', '10**9')) if os.environ.get('MAXF') else 10**9)):
     t = f*SLOW/FPS
-    ta = anim_time(t); dta = ta - ta_prev; ta_prev = ta; spd = float(np.clip(dta*FPS, 0, 3))
+    ta = anim_time(t); dta = ta - ta_prev; ta_prev = ta; spd = float(np.clip(dta*30, 0, 3))
     day_i = int(max(0, t - SUNRISE0)//DAY)
     st = [T[0].state(ta), T[1].state(ta)]
     FZ = [st[0]["z"], st[1]["z"]]
@@ -862,7 +867,7 @@ for f in range(int(DUR*FPS/SLOW)):
                 b.v[[7, 8, 9, 10]] += np.array([-12, 20, -12, 20])*s; hitflash[v] = 1
             elif z == "block":
                 b.v[[3, 4, 5, 6]] += np.array([-10, 14, -10, 14])*s; b.v[1] -= 4*s
-    hitflash *= 0.6
+    hitflash *= 0.6**PF
 
     sk = [rig(i, st[i], ta, dta) for i in range(2)]
     if dta > 0:
@@ -908,13 +913,13 @@ for f in range(int(DUR*FPS/SLOW)):
         if abs(xs_[1] - xs_[0]) > 520 and LASTV is not None:
             Tg = np.array([xs_[LASTV], st[LASTV]["h"]*0.6 + 60, st[LASTV]["z"]]); zt = 0.62
     if cut and sh is not None: camT = Tg.copy()
-    camT += (Tg - camT)*(0.35 if (sid == "orb" or sh is not None) else 0.25)
-    zoom += (zt - zoom)*(1 if cut else 0.2)
-    if sh is None: yaw, pitch, dist = 14 + 10*math.sin(t*0.17) + 0.8*math.sin(t*1.3), 8 + 0.5*math.sin(t*1.7), 700.0; fpx = 1.9*zoom*dist
+    camT += (Tg - camT)*(1 - (1 - (0.35 if (sid == "orb" or sh is not None) else 0.25))**PF)
+    zoom += (zt - zoom)*(1 if cut else 1 - 0.8**PF)
+    if sh is None: yaw, pitch, dist = 14 + 10*math.sin(t*0.17) + 0.8*math.sin(t*1.3), 8 + 0.5*math.sin(t*1.7), 700.0; fpx = 1.9*zoom*dist*K
     else:
-        t0 = SHOT3[sid][0]; yaw = sh["yaw"] + sh["orbit"]*(t - t0); pitch, dist, fpx = sh["pitch"], sh["dist"] + sh.get("dolly", 0)*(t - t0), 520.0
+        t0 = SHOT3[sid][0]; yaw = sh["yaw"] + sh["orbit"]*(t - t0); pitch, dist, fpx = sh["pitch"], sh["dist"] + sh.get("dolly", 0)*(t - t0), 520.0*K
     C, fw, rt, up = look(camT, yaw, pitch, dist)
-    shake *= 0.82; flash *= 0.78
+    shake *= 0.82**PF; flash *= 0.78**PF
     ox, oy = random.uniform(-shake, shake), random.uniform(-shake, shake)
     CY = H*0.55
     def proj(p):
@@ -949,7 +954,7 @@ for f in range(int(DUR*FPS/SLOW)):
     def sky_pt(az, elv):
         rel = az - view_az
         if abs(rel) > 1.3: return None
-        return (W/2 + 300*math.tan(rel) + ox, hy - 300*math.tan(min(elv, 1.25))*0.62)
+        return (W/2 + 300*K*math.tan(rel) + ox, hy - 300*K*math.tan(min(elv, 1.25))*0.62)
     night = float(np.clip(-el/0.3, 0, 1))
     if night > 0:
         for az, elv, tw in STARS:
@@ -972,18 +977,18 @@ for f in range(int(DUR*FPS/SLOW)):
         if kind == "moon": d.ellipse([p[0]-rad+7, p[1]-rad-3, p[0]+rad+7, p[1]+rad-3], fill=tuple(int(v) for v in skyc[0]) if False else tuple(int(v) for v in mix(top, hor, 0.3)))
     # nuages en accéléré
     cm = Image.new("L", (W, H)); cd = ImageDraw.Draw(cm)
-    CLOUD_PUSH *= 0.97; WIND *= 0.96
+    CLOUD_PUSH *= 0.97**PF; WIND *= 0.96**PF
     for cl in CLOUDS:
         rel_ = cl[0] + math.radians(yaw)
-        cl[0] += 0.55/FPS*(1 + 6*WIND) + CLOUD_PUSH*0.06*(1 if rel_ >= 0 else -1)
+        cl[0] += 0.55/FPS*(1 + 6*WIND) + CLOUD_PUSH*0.06*PF*(1 if rel_ >= 0 else -1)
         if cl[0] > 1.6: cl[0] -= 3.2
         p = sky_pt(cl[0], cl[1])
         if p and p[1] < hy:
-            s_ = cl[2]
+            s_ = cl[2]*K
             for dx_, dy_, r_ in ((0, 0, 1), (-0.8, 0.2, 0.7), (0.8, 0.25, 0.75)):
                 cd.ellipse([p[0] + dx_*s_ - r_*s_, p[1] + dy_*s_ - r_*s_*0.5, p[0] + dx_*s_ + r_*s_, p[1] + dy_*s_ + r_*s_*0.5], fill=150)
-    cm = cm.filter(ImageFilter.GaussianBlur(14))
-    img = Image.fromarray(np.clip(np.asarray(img, np.float32) + np.asarray(skyg.filter(ImageFilter.GaussianBlur(16)), np.float32), 0, 255).astype(np.uint8))
+    cm = cm.filter(ImageFilter.GaussianBlur(14*K))
+    img = Image.fromarray(np.clip(np.asarray(img, np.float32) + np.asarray(skyg.filter(ImageFilter.GaussianBlur(16*K)), np.float32), 0, 255).astype(np.uint8))
     ccol = mix(mix(hor, (255, 255, 255), 0.5), (40, 42, 60), night)
     img = Image.composite(Image.new("RGB", (W, H), tuple(int(v) for v in ccol)), img, cm)
     d = ImageDraw.Draw(img)
@@ -1066,8 +1071,8 @@ for f in range(int(DUR*FPS/SLOW)):
         pp = proj((-80, st[0]["h"] + 40, 0))
         if pp:
             px, py = pp[:2]
-            for r_, c_ in ((60, (90, 140, 160)), (30, (200, 240, 255))): gd.ellipse([px-r_, py-r_, px+r_, py+r_], fill=c_)
-            gd.line([px, py, px, py - 400], fill=(120, 200, 230), width=18); d.ellipse([px-14, py-14, px+14, py+14], fill=(255, 255, 255))
+            for r_, c_ in ((60*K, (90, 140, 160)), (30*K, (200, 240, 255))): gd.ellipse([px-r_, py-r_, px+r_, py+r_], fill=c_)
+            gd.line([px, py, px, py - 400*K], fill=(120, 200, 230), width=18*K); d.ellipse([px-14*K, py-14*K, px+14*K, py+14*K], fill=(255, 255, 255))
 
     # ---------- décor abîmé ----------
     dark = tuple(int(v*0.5) for v in gb); rim = tuple(int(min(255, v*1.15)) for v in gb)
@@ -1139,7 +1144,7 @@ for f in range(int(DUR*FPS/SLOW)):
         F = st[i]["F"]
         scr = [proj((sk[i][n][0], sk[i][n][1], pz + ZOFF[n]*F)) for n in range(12)]
         if any(p is None for p in scr): continue
-        trails[i] = (trails[i] + [scr])[-5:]
+        trails[i] = (trails[i] + [scr])[-int(5/PF):]
         base = COL[i]; hc = tuple(int(c_ + (255 - c_)*hitflash[i]) for c_ in base)
         for j, tr in enumerate(trails[i][:-1]):
             a_ = (j + 1)/len(trails[i])*0.4*gmul
@@ -1226,7 +1231,7 @@ for f in range(int(DUR*FPS/SLOW)):
             rings.append([ex, ey, 0.0, 1.5, ey < 5]); shake = max(shake, 5); flash = max(flash, 0.2)
             if ey < 5: crater(ex, 26, ez); debris(ex, 0, ez, 10); break_pillars(ex, 40)
             else: hitflash[pj["d"]] = 0.7
-    if DK0 <= t < TF + 1.0 and random.random() < 0.12:   # orage pendant la montée en puissance
+    if DK0 <= t < TF + 1.0 and random.random() < 0.12*PF:   # orage pendant la montée en puissance
         tgp = proj((st[WIN]["x"] + random.uniform(-260, 260), 0, random.uniform(-250, 40)))
         if tgp:
             x_ = random.uniform(0, W); pts_ = [(x_, 0)]
@@ -1253,13 +1258,13 @@ for f in range(int(DUR*FPS/SLOW)):
             pc = proj((r[0], r[1], 0))
             if pc: rp = rad*fpx/pc[2]; gd.ellipse([pc[0]-rp, pc[1]-rp, pc[0]+rp, pc[1]+rp], outline=col, width=wd)
     rings = [r for r in rings if r[2] < 14]
-    if f - lines_t < 8:
-        a_ = 1 - (f - lines_t)/8
+    if f - lines_t < 8/PF:
+        a_ = 1 - (f - lines_t)/(8/PF)
         lp = proj(lines_pos) if lines_pos else None
         cxl, cyl = (lp[0], lp[1]) if lp else (W/2, H/2)
         for _ in range(40):
-            an = random.uniform(0, 2*math.pi); r0 = random.uniform(150, 260)
-            gd.line([cxl + math.cos(an)*r0, cyl + math.sin(an)*r0, cxl + math.cos(an)*1100, cyl + math.sin(an)*1100],
+            an = random.uniform(0, 2*math.pi); r0 = random.uniform(150, 260)*K
+            gd.line([cxl + math.cos(an)*r0, cyl + math.sin(an)*r0, cxl + math.cos(an)*1100*K, cyl + math.sin(an)*1100*K],
                     fill=tuple(int(c*a_*0.85) for c in lines_col), width=2)
     # ---------- effets d'impact spectaculaires ----------
     for im in IMPACTS:
@@ -1388,13 +1393,13 @@ for f in range(int(DUR*FPS/SLOW)):
             (gd if r_ > 3 else d).ellipse([pp_[0]-r_, pp_[1]-r_, pp_[0]+r_, pp_[1]+r_], fill=c_ if r_ > 3 else tuple(min(255, v + 90) for v in c_))
     for s in ash:
         if TH == "volcan":   # braises qui montent
-            s[0] = (s[0] + 0.6*math.sin(t*2 + s[2]*9)) % W; s[1] = (s[1] - 1.8*s[2]) % H
+            s[0] = (s[0] + 0.6*K*PF*math.sin(t*2 + s[2]*9)) % W; s[1] = (s[1] - 1.8*K*PF*s[2]) % H
             gd.ellipse([s[0]-2, s[1]-2, s[0]+2, s[1]+2], fill=(255, 120, 40)); d.point((s[0], s[1]), fill=(255, 200, 120))
         elif TH == "glace":  # neige
-            s[0] = (s[0] - 0.8*s[2] + 0.5*math.sin(t + s[2]*5)) % W; s[1] = (s[1] + 2.2*s[2]) % H
+            s[0] = (s[0] + K*PF*(-0.8*s[2] + 0.5*math.sin(t + s[2]*5))) % W; s[1] = (s[1] + 2.2*K*PF*s[2]) % H
             d.ellipse([s[0]-1.5, s[1]-1.5, s[0]+1.5, s[1]+1.5], fill=(250, 252, 255))
         else:
-            s[0] = (s[0] - 1.5*s[2]*(1 + 8*WIND)) % W; s[1] = (s[1] + 0.6*s[2]) % H
+            s[0] = (s[0] - 1.5*K*PF*s[2]*(1 + 8*WIND)) % W; s[1] = (s[1] + 0.6*K*PF*s[2]) % H
             d.point((s[0], s[1]), fill=tuple(int(v) for v in mix((170, 150, 130), (90, 90, 110), night)))
 
     # « JOUR N » à chaque lever du soleil
@@ -1410,21 +1415,21 @@ for f in range(int(DUR*FPS/SLOW)):
         u_ = (ta - t_ko)/1.4
         if 0 <= u_ < 1:
             al = min(1, u_*6, (1 - u_)*4); sc_ = 1.0 + 0.6*max(0, 0.15 - u_)/0.15
-            ft = FONTKO if sc_ < 1.05 else ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(120*sc_))
+            ft = FONTKO if sc_ < 1.05 else ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(120*K*sc_))
             c_ = COL[a_ko]
             d.text((W/2, H*0.22), "K.O.", font=ft, anchor="mm", fill=tuple(int(v*al + 20*(1 - al)) for v in mix(c_, (255, 255, 255), 0.35)),
-                   stroke_width=6, stroke_fill=tuple(int(v*0.25*al) for v in c_))
-    arr = np.asarray(img, np.float32)*(1 - dk) + np.asarray(glow.filter(ImageFilter.GaussianBlur(10)), np.float32)*0.9 \
+                   stroke_width=6*K, stroke_fill=tuple(int(v*0.25*al) for v in c_))
+    arr = np.asarray(img, np.float32)*(1 - dk) + np.asarray(glow.filter(ImageFilter.GaussianBlur(10*K)), np.float32)*0.9 \
           + np.asarray(glow, np.float32)*0.25
     arr = arr*vign + flash*150*(flash_col/255.0)
     if f - inv_t == 0: arr = 255 - np.clip(arr, 0, 255)
-    if sh is not None: arr[:70] = 0; arr[-70:] = 0
+    if sh is not None: arr[:70*K] = 0; arr[-70*K:] = 0
     hud = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)); hd = ImageDraw.Draw(hud)
-    BW, BH, BY = 226, 18, 26
+    BW, BH, BY = 226*K, 18*K, 26*K
     for i_ in range(2):
         hp_ = hp_at(i_, ta); trail_hp[i_] = max(hp_, trail_hp[i_] - 0.9*max(spd, 0.3)) if trail_hp[i_] > hp_ else hp_
-        x0 = 16 if i_ == 0 else W - 16 - BW
-        hd.rectangle([x0 - 3, BY - 3, x0 + BW + 3, BY + BH + 3], fill=(15, 12, 18))
+        x0 = 16*K if i_ == 0 else W - 16*K - BW
+        hd.rectangle([x0 - 3*K, BY - 3*K, x0 + BW + 3*K, BY + BH + 3*K], fill=(15, 12, 18))
         hd.rectangle([x0, BY, x0 + BW, BY + BH], fill=(55, 30, 30))
         def span(v_): w_ = int(BW*v_/100); return (x0, x0 + w_) if i_ == 0 else (x0 + BW - w_, x0 + BW)
         a0_, a1_ = span(trail_hp[i_])
@@ -1432,10 +1437,10 @@ for f in range(int(DUR*FPS/SLOW)):
         b0_, b1_ = span(hp_)
         col_ = (255, 255, 255) if hit_recent(i_, ta) else (COL[i_] if hp_ > 25 else (255, 70, 50) if int(t*8) % 2 else COL[i_])
         if b1_ > b0_:
-            hd.rectangle([b0_, BY, b1_, BY + BH], fill=col_); hd.rectangle([b0_, BY, b1_, BY + 5], fill=tuple(min(255, v + 70) for v in col_))
-        hd.text((x0 + (2 if i_ == 0 else BW - 2), BY + BH + 6), ("BLEU" if i_ == 0 else "ROUGE"), font=FONTHUD,
-                anchor="la" if i_ == 0 else "ra", fill=COL[i_], stroke_width=2, stroke_fill=(10, 10, 14))
-    hd.text((W/2, BY + BH/2), "VS", font=FONTHUD, anchor="mm", fill=(255, 255, 255), stroke_width=2, stroke_fill=(10, 10, 14))
+            hd.rectangle([b0_, BY, b1_, BY + BH], fill=col_); hd.rectangle([b0_, BY, b1_, BY + 5*K], fill=tuple(min(255, v + 70) for v in col_))
+        hd.text((x0 + (2 if i_ == 0 else BW - 2), BY + BH + 6*K), ("BLEU" if i_ == 0 else "ROUGE"), font=FONTHUD,
+                anchor="la" if i_ == 0 else "ra", fill=COL[i_], stroke_width=2*K, stroke_fill=(10, 10, 14))
+    hd.text((W/2, BY + BH/2), "VS", font=FONTHUD, anchor="mm", fill=(255, 255, 255), stroke_width=2*K, stroke_fill=(10, 10, 14))
     ff.stdin.write(np.asarray(hud).tobytes())
 
 ff.stdin.close(); ff.wait()
