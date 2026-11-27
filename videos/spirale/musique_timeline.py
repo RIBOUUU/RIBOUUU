@@ -4,7 +4,8 @@ Prend un passage de la musique (debut, fin, instant du drop en secondes dans le 
 une duree d'un nombre entier d'images multiple de 16 (boucle audio/video parfaite en AAC 48 kHz),
 detecte les attaques (onsets) pour les rebonds de la bille, place le tunnel juste avant le drop.
 
-Usage : python3 musique_timeline.py <musique> <debut> <fin> <drop> <nom>
+Usage : python3 musique_timeline.py <musique> <debut> <fin> <drop> <nom> [grille]
+  grille : rebonds exactement sur chaque temps (au lieu des attaques detectees)
   -> timeline_<nom>.json + audio_<nom>.wav
 """
 import sys, json, subprocess, wave, tempfile, os
@@ -36,19 +37,33 @@ beats = list(librosa.frames_to_time(bfr, sr=22050))
 strength = {round(t, 3): env[librosa.time_to_frames(t, sr=22050)] for t in on}
 
 EXIT = (TD - A0) * k; RIM = EXIT - 1.9; DROP = EXIT - 0.5
-hits = [0.0]
-for t in sorted(on):
-    if t - hits[-1] >= 0.17 and t < PER - 0.17 and not (RIM - 0.17 < t < EXIT + 0.17): hits.append(t)
-hits = sorted(set([round(h, 4) for h in hits] + [round(EXIT, 4)]))
-hits = [h for h in hits if not (RIM - 0.17 < h < EXIT - 1e-6)]
+GRILLE = len(sys.argv) > 6 and sys.argv[6] == "grille"
+if GRILLE:
+    # rebonds sur une grille reguliere de temps (le nombre de temps entier dans la boucle) :
+    # on cherche la phase qui colle le mieux aux attaques, puis on fait tourner la boucle pour qu'un temps tombe a 0
+    nb = int(round(PER / float(np.median(np.diff(beats))))); B = PER / nb
+    tt = librosa.times_like(env, sr=22050)
+    ph = max(np.arange(0, B, 0.002), key=lambda p: np.interp(np.arange(p, PER, B), tt, env, period=PER).sum())
+    loop = np.roll(loop, -int(round(ph * SR)), axis=0)
+    beats = [i * B for i in range(nb)]
+    jb = int(round(((EXIT - ph) % PER) / B)); EXIT = jb * B
+    RIM = (jb - 4) * B; DROP = (jb - 1) * B
+    hits = [i * B for i in range(nb) if not (jb - 4 <= i < jb)]
+    print(f"grille : {nb} temps de {B:.4f}s, phase {ph:.3f}s, drop sur le temps {jb}")
+else:
+    hits = [0.0]
+    for t in sorted(on):
+        if t - hits[-1] >= 0.17 and t < PER - 0.17 and not (RIM - 0.17 < t < EXIT + 0.17): hits.append(t)
+    hits = sorted(set([round(h, 4) for h in hits] + [round(EXIT, 4)]))
+    hits = [h for h in hits if not (RIM - 0.17 < h < EXIT - 1e-6)]
 rows = []
 for i, t in enumerate(hits):
     nxt = hits[i + 1] if i + 1 < len(hits) else PER
     if t < RIM < nxt + 1e-6: nxt = RIM
-    rows.append(dict(t=round(t, 4), dur=round(nxt - t, 4), sec=0 if t < EXIT - 1e-6 else 1, note="A4", chord=""))
+    rows.append(dict(t=float(t), dur=float(nxt - t), sec=0 if t < EXIT - 1e-6 else 1, note="A4", chord=""))
 OFF = round(max(0.0, EXIT - 4.0) * FPS) / FPS
-json.dump(dict(period=PER, offset=OFF, hits=rows, tunnel=dict(rim=round(RIM, 4), drop=round(DROP, 4), exit=round(EXIT, 4)),
-               kicks=[round(b, 4) for b in beats], boom=round(EXIT, 4), source=os.path.basename(src), extrait=[A0, A1]),
+json.dump(dict(period=PER, offset=OFF, hits=rows, tunnel=dict(rim=float(RIM), drop=float(DROP), exit=float(EXIT)),
+               kicks=[float(b) for b in beats], boom=float(EXIT), source=os.path.basename(src), extrait=[A0, A1]),
           open(f"timeline_{NAME}.json", "w"), indent=1)
 out = np.roll(loop, -int(round(OFF * SR)), axis=0)
 st = (np.clip(out, -1, 1) * 32767).astype(np.int16)
