@@ -31,7 +31,7 @@ B_BUILD, B_DROP = (0.1, 1.0, 0.75), (1.0, 0.72, 0.08)            # bille : cyan 
 C_FUN = C_DROP
 if PIRATE:
     C_BUILD, C_DROP = (1.0, 0.55, 0.06), (1.0, 0.07, 0.03)        # chiffres : or, puis rouge
-    B_BUILD, B_DROP = (0.55, 0.9, 1.0), (1.0, 0.68, 0.06)        # perle bleutee -> tresor en or
+    B_BUILD, B_DROP = (0.05, 0.35, 1.0), (1.0, 0.68, 0.06)        # perle bleue -> tresor en or
     C_FUN = (0.75, 0.95, 1.0)                                    # ecume du tourbillon
 
 def P3(a, r, z): return Vector((r * math.cos(a), r * math.sin(a), z))
@@ -45,17 +45,25 @@ def hop_params(z0, z1, T):
     g = x * x; return g, math.sqrt(2 * g * Hh)
 
 # ---------------- trajectoire d'une periode ----------------
+# Gravite fixe. Chaque rebond est un point de contact : sol (F), plafond (C : la bille monte taper une caisse
+# suspendue par en dessous), mur interieur (W) ou exterieur (O). La caisse est orientee selon la normale
+# du choc (vitesse sortante - vitesse entrante), calculee plus bas : elle est donc toujours juste.
+G = 28.0; HC, HW, WD = 5.2, 4.0, 2.2
+PAT_A = "FFCFWFFCFWFCFFWFF"            # montee (le dernier rebond saute dans le tourbillon)
+PAT_B = "FCWFCWFCWF"                   # drop : la bille tape dans tous les sens
+def hit_type(i, sec, j): return (PAT_B[j % len(PAT_B)] if sec else PAT_A[i % len(PAT_A)])
+def hop_seg(t0, T, a0, r0, z0, a1, r1, z1):
+    return ("hop", t0, t0 + T, (a0, r0, z0, a1, r1, z1, G, (z1 - z0) / T + G * T / 2, T))
 SEGS, BLOCKS = [], []
-a, r, z = 0.0, R, 0.0
-FN = None
+a, r, z = 0.0, R, 0.0; zb = 0.0
+FN = None; jB = 0
 for i, h in enumerate(HITS):
     t0, T = h["t"], h["dur"]
     kind = "sortie" if abs(t0 - TUN["exit"]) < 1e-6 else "normal"
     BLOCKS.append(dict(a=a, r=r, z=z, t=t0, sec=h["sec"], kind=kind, i=i))
     if abs(t0 + T - TUN["rim"]) < 1e-6:
-        ac = a - V * T / R; zr = z - SLOPE * T * 0.6
-        g, vy = hop_params(z, zr, T)
-        SEGS.append(("hop", t0, t0 + T, (a, r, z, ac, R, zr, g, vy, T)))
+        ac = a - V * T / R; zr = zb - SLOPE * T * 0.6
+        SEGS.append(hop_seg(t0, T, a, r, z, ac, R, zr))
         C = P3(ac, R + RF, 0); top = zr - BR; k = HF / (RF / R0 - 1)
         F = TUN["drop"] - TUN["rim"]; D = TUN["exit"] - TUN["drop"]
         arr = []; th = ac + math.pi; n = 900
@@ -66,12 +74,19 @@ for i, h in enumerate(HITS):
         FN = dict(C=C, ac=ac, top=top, k=k, arr=arr, F=F, D=D, rim=TUN["rim"], drop=TUN["drop"], exit=TUN["exit"],
                   z_hole=z_hole, z_e=z_e, v0=v0, A=2 * (z_hole - z_e - v0 * D) / (D * D), w_end=V * 2.8 / R0)
         SEGS.append(("funnel", TUN["rim"], TUN["drop"], FN)); SEGS.append(("drop", TUN["drop"], TUN["exit"], FN))
-        a, r, z = ac, R + RF, z_e
+        a, r, z = ac, R + RF, z_e; zb = z_e
     else:
-        na = a - V * T / R; nz = z - SLOPE * T
-        g, vy = hop_params(z, nz, T)
-        SEGS.append(("hop", t0, t0 + T, (a, r, z, na, R, nz, g, vy, T)))
-        a, r, z = na, R, nz
+        na = a - V * T / R; zb -= SLOPE * T
+        last = i + 1 >= len(HITS)
+        if not last and HITS[i + 1]["sec"]: jB += 1
+        ty = "F" if last or abs(HITS[i + 1]["t"] - TUN["exit"]) < 1e-6 else hit_type(i + 1, HITS[i + 1]["sec"], jB - 1)
+        if i + 2 < len(HITS) and abs(HITS[i + 1]["t"] + HITS[i + 1]["dur"] - TUN["rim"]) < 1e-6: ty = "F"
+        nr, nz = R, zb
+        if ty == "C": nz = zb + HC
+        elif ty == "W": nr, nz = R - WD, zb + HW
+        elif ty == "O": nr, nz = R + WD, zb + HW
+        SEGS.append(hop_seg(t0, T, a, r, z, na, nr, nz))
+        a, r, z = na, nr, nz
 DA, DZ = a, z                     # decalage d'une periode a la suivante (rayon revenu a R)
 print(f"periode : rotation {DA:.3f} rad, descente {DZ:.2f}", flush=True)
 
@@ -248,50 +263,70 @@ def make_neon(b):
 FUN_K = (0, 1)                                       # copies d'entonnoir utiles
 def fun_center(k): return Tk(FN["C"], k)
 
-BL, BH = 2.5, 0.85
+BL, BH = 1.9, 0.85
+from mathutils import Matrix
+def vel(t, e=0.004): return (ball_pos(t + e) - ball_pos(t - e)) / (2 * e)
+def contact_frame(b):
+    """normale du choc + axes de la caisse (le bout lumineux tourne vers la camera)"""
+    t = b["t"]; e = 0.012
+    n = vel(t + e) - vel(t - e)
+    n = n.normalized() if n.length > 1e-3 else Vector((0, 0, 1))
+    p = ball_pos(t)
+    d = P3(b["a"] + 0.62, 12.0, p.z + 2.0) - p                    # direction approximative de la camera
+    x = d - n * d.dot(n)
+    if x.length < 1e-3: x = Vector((1, 0, 0)) - n * n.x
+    x.normalize(); y = n.cross(x)
+    return n, x, y
 n_blocks = 0
 for k in (-1, 0, 1, 2):
     for b in BLOCKS:
         tg = b["t"] + k * PER
         if not (OFF - 6.5 <= tg <= OFF + PER + 9.5): continue         # hors champ pendant toute la video
         i = b["i"]; s = b["sec"]; nm = f"{k}_{i}"
+        n, xa, ya = contact_frame(b)
         if b["kind"] == "sortie":
-            w = 1.4; bl = 2.6; rr = b["r"]
+            w = 1.4; bl = 2.6; n = Vector((0, 0, 1)); xa = Vector((math.cos(b["a"]), math.sin(b["a"]), 0)); ya = n.cross(xa)
         else:
-            nb = [o for o in BLOCKS if abs(o["i"] - i) == 1 and o["kind"] == "normal"]
-            dmin = min([(P3(o["a"], o["r"], 0) - P3(b["a"], b["r"], 0)).length for o in nb] + [9])
-            w = min(0.9, dmin * 0.75); bl = BL; rr = b["r"] + 0.35
+            w = 0.9; bl = BL
+        rot = Matrix((xa, ya, n)).transposed().to_euler()
         root = bpy.data.objects.new(f"bloc_{nm}", None); sc.collection.objects.link(root)
-        root.location = Tk(P3(b["a"], rr, b["z"] - BR - BH / 2), k); root.rotation_euler = (0, 0, b["a"] + k * DA)
-        add_box(f"corps_{nm}", (bl, w, BH), (0, 0, 0), root, m_body, bevel=0.04)
+        base = ball_pos(b["t"]) - n * (BR + BH / 2)
+        if b["kind"] == "sortie": base = P3(b["a"], b["r"], b["z"] - BR - BH / 2)
+        root.location = Tk(base, k); root.rotation_euler = rot
+        if k: root.rotation_euler = (Matrix.Rotation(k * DA, 3, 'Z') @ rot.to_matrix()).to_euler()
+        piv = bpy.data.objects.new(f"pivot_{nm}", None); sc.collection.objects.link(piv); piv.parent = root
+        add_box(f"corps_{nm}", (bl, w, BH), (0, 0, 0), piv, m_body, bevel=0.04)
         if PIRATE:     # cerclages en fer aux deux bouts de la caisse
-            for sx in (-bl / 2 + 0.28, bl / 2 - 0.42):
-                add_box(f"cerclage_{nm}", (0.12, w + 0.03, BH + 0.03), (sx, 0, 0), root, m_iron, bevel=0.01)
-        for sx in (-0.85, 0.75):
+            for sx in (-bl / 2 + 0.22, bl / 2 - 0.34):
+                add_box(f"cerclage_{nm}", (0.12, w + 0.03, BH + 0.03), (sx, 0, 0), piv, m_iron, bevel=0.01)
+        for sx in (-0.6, 0.5):
             bpy.ops.mesh.primitive_cylinder_add(radius=0.045, depth=0.03, location=(sx, 0, BH / 2 + 0.01)); sw = bpy.context.object
-            sw.data.materials.append(m_screw); sw.parent = root
+            sw.data.materials.append(m_screw); sw.parent = piv
         lit = mat(f"neon_{nm}", base=(0.05, 0.04, 0.0), rough=0.4, emis=C_DROP if s else C_BUILD, strength=0.0)
         d = (i + 1) % 10; fx = bl / 2 + 0.012
         for kk, (cy, cz, sw_, sh) in seg_rects(min(w, 0.9) * 0.42, BH * 0.62, 0.065 * min(1, w / 0.6)):
-            add_box(f"seg_{nm}_{kk}", (0.02, sw_, sh), (fx, cy, cz), root, lit if kk in SEG7[d] else m_off)
+            add_box(f"seg_{nm}_{kk}", (0.02, sw_, sh), (fx, cy, cz), piv, lit if kk in SEG7[d] else m_off)
         for (cy, cz, sw_, sh) in ((0, BH / 2 - 0.035, w * 0.92, 0.035), (0, -BH / 2 + 0.035, w * 0.92, 0.035),
                                   (w * 0.46 - 0.0175, 0, 0.035, BH * 0.92), (-w * 0.46 + 0.0175, 0, 0.035, BH * 0.92)):
-            add_box(f"cadre_{nm}", (0.02, sw_, sh), (fx, cy, cz), root, lit)
+            add_box(f"cadre_{nm}", (0.02, sw_, sh), (fx, cy, cz), piv, lit)
         if b["kind"] == "sortie":
             for sy in (-1, 1):
-                add_box(f"lisere_{nm}", (bl * 0.96, 0.04, 0.03), (0, sy * (w / 2 - 0.05), BH / 2 + 0.005), root, lit)
-        wx = Tk(P3(b["a"], rr + bl / 2 - 0.15, 0), k)
+                add_box(f"lisere_{nm}", (bl * 0.96, 0.04, 0.03), (0, sy * (w / 2 - 0.05), BH / 2 + 0.005), piv, lit)
+        # cordes : les caisses du plafond sont suspendues, quelques caisses du sol aussi
+        wx = Tk(base, k)
         clash = any((wx.xy - fun_center(q).xy).length < RF + 0.6 for q in (k - 1, k, k + 1))
-        if i % (6 if PIRATE else 3) == 0 and not clash and b["kind"] == "normal":
-            bpy.ops.mesh.primitive_cylinder_add(radius=0.02 if PIRATE else 0.01, depth=30, location=(bl / 2 - 0.15, 0, BH / 2 + 15)); wi = bpy.context.object
-            wi.data.materials.append(m_wire); wi.parent = root
+        hang = n.z < -0.8 or (n.z > 0.8 and i % (6 if PIRATE else 3) == 0)
+        if hang and not clash and b["kind"] == "normal":
+            sz = 1 if n.z > 0 else -1
+            bpy.ops.mesh.primitive_cylinder_add(radius=0.02 if PIRATE else 0.01, depth=30, location=(bl / 2 - 0.15, 0, sz * (BH / 2 + 15))); wi = bpy.context.object
+            wi.data.materials.append(m_wire); wi.parent = piv
         bt = dict(b); bt["t"] = tg
         key_series(lit.node_tree.nodes.get("Principled BSDF").inputs["Emission Strength"], make_neon(bt))
-        dz = make_dz(impulses(bt)); z0 = root.location.z
+        dz = make_dz(impulses(bt))
         for f in range(max(KF0, int(tg * FPS) - 1), KF1 + 1):
             t = f / FPS
-            root.location.z = z0 + dz(t); root.keyframe_insert("location", index=2, frame=f)
-            root.rotation_euler.x = 0.35 * dz(t - 0.06); root.keyframe_insert("rotation_euler", index=0, frame=f)
+            piv.location.z = dz(t); piv.keyframe_insert("location", index=2, frame=f)       # recule selon la normale
+            piv.rotation_euler.x = 0.35 * dz(t - 0.06); piv.keyframe_insert("rotation_euler", index=0, frame=f)
         n_blocks += 1
 print("blocs :", n_blocks, flush=True)
 
@@ -458,12 +493,12 @@ def rig(t):
     sb = smooth_ball(t); lk = smooth_ball(t + 0.25, 0.35, 9)
     a_ = math.atan2(sb.y, sb.x)
     phi = a_ + 0.62 + 0.12 * math.sin(2 * W2 * t) + 0.22 * e * math.sin(7 * W2 * t)
-    rc = 12.0 - 2.2 * e + 0.6 * math.sin(3 * W2 * t); hc = 5.6 - 0.8 * e + 0.6 * math.sin(2 * W2 * t + 1.2)
+    rc = 13.5 - 2.2 * e + 0.6 * math.sin(3 * W2 * t); hc = 2.6 - 0.6 * e + 0.6 * math.sin(2 * W2 * t + 1.2)   # vue plus de cote : on voit les chocs en haut, en bas et sur les cotes
     for x in KICKS:                                  # le zoom « pompe » sur les kicks du drop
         s = tl - x
         if x >= EXIT - 1e-6 and 0 <= s < 0.5: rc -= 0.45 * math.exp(-s / 0.09)
     pos = Vector((rc * math.cos(phi), rc * math.sin(phi), sb.z + hc))
-    tg = Vector((lk.x * 0.85, lk.y * 0.85, lk.z - 1.0))
+    tg = Vector((lk.x * 0.85, lk.y * 0.85, lk.z - 0.2))
     C = fun_center(k); top = FN["top"] + k * DZ; ac = FN["ac"] + k * DA
     wf = sstep(FN["rim"] - 0.45, FN["rim"] + 0.2, tl) * (1 - sstep(FN["drop"] - 0.12, FN["drop"] + 0.12, tl))
     wd = sstep(FN["drop"] - 0.12, FN["drop"] + 0.12, tl) * (1 - sstep(FN["exit"] + 0.1, FN["exit"] + 0.7, tl))
