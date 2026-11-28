@@ -61,25 +61,28 @@ for q, S in enumerate(SONGS):
 loop = out[:n].copy()
 # ---------- chaque objet joue une NOTE de la melodie quand la bille le touche ----------
 import librosa
-def melodie(S):
-    """hauteur de la melodie a chaque croche du drop (pyin sur la partie harmonique, registre C4-C7)"""
-    d = S["n"] * S["B"]; y, sr = librosa.load(S["f"], sr=22050, mono=True, offset=S["D"], duration=d + 0.2)
+def melodie(S, off=None, nb=None):
+    """melodie (pyin, registre C4-C7) + basse (chroma grave) a chaque croche d'un passage du morceau"""
+    off = S["D"] if off is None else off; nb = S["n"] if nb is None else nb
+    d = nb * S["B"]; y, sr = librosa.load(S["f"], sr=22050, mono=True, offset=off, duration=d + 0.2)
     yh = librosa.effects.harmonic(y)
     f0, vo, _ = librosa.pyin(yh, fmin=260, fmax=2100, sr=sr, frame_length=2048, hop_length=256)
     tt = librosa.times_like(f0, sr=sr, hop_length=256)
     C = librosa.feature.chroma_cqt(y=yh, sr=sr, hop_length=256)
+    Cb = np.abs(librosa.cqt(yh, sr=sr, hop_length=256, fmin=librosa.note_to_hz('C2'), n_bins=24))     # 2 octaves graves
     notes = []
-    for j in range(2 * S["n"]):
+    for j in range(2 * nb):
         t0 = j * S["B"] / 2; m = (tt >= t0) & (tt < t0 + S["B"] / 2)
-        fv = f0[m & vo] if np.any(m & vo) else []
-        if len(fv): midi = int(round(np.median(librosa.hz_to_midi(fv))))
-        else: midi = 72 + int(np.argmax(C[:, m].mean(1))) if np.any(m) else 72        # sinon : note dominante (octave 5)
+        if not np.any(m): m = np.zeros_like(m); m[min(len(m) - 1, int(t0 * sr / 256))] = True
+        fv = f0[m & vo]
+        midi = int(round(np.median(librosa.hz_to_midi(fv)))) if len(fv) else 72 + int(np.argmax(C[:, m].mean(1)))
         while midi > 86: midi -= 12
         while midi < 64: midi += 12
-        notes.append(midi)
+        bass = 36 + int(np.argmax(Cb[:, m].mean(1))) % 12
+        notes.append((midi, bass))
     return notes
 MEL = [melodie(S) for S in SONGS]
-print("melodies :", [m[:12] for m in MEL])
+print("melodies :", [[x[0] for x in m[:12]] for m in MEL])
 sr_ = SR; rng = np.random.default_rng(1)
 def env(n, att, dec): t = np.arange(n) / sr_; return np.minimum(1, t / att) * np.exp(-t / dec)
 def marimba(f, d=1.2):     # bois (etageres)
@@ -108,12 +111,28 @@ def type_of(h):
     return "normal"
 notes_bus = np.zeros((n, 2))
 for h in hits:
-    midi = MEL[h["sec"]][h["i"]]; f = 440 * 2 ** ((midi - 69) / 12); ty = type_of(h)
+    midi, bass = MEL[h["sec"]][h["i"]]; f = 440 * 2 ** ((midi - 69) / 12); ty = type_of(h)
     x = INSTR[ty](f); x = x / (np.abs(x).max() + 1e-9)
+    xb = marimba(440 * 2 ** ((bass - 69) / 12), 1.0); xb = 0.45 * xb / (np.abs(xb).max() + 1e-9)       # la basse, jouee par le meme choc
+    m_ = max(len(x), len(xb)); x = np.pad(x, (0, m_ - len(x))) + np.pad(xb, (0, m_ - len(xb)))
     a = int(round(h["t"] * SR)); idx = (np.arange(len(x)) + a) % n; pan = 0.5 + 0.3 * np.sin(h["i"] * 1.3)
     np.add.at(notes_bus[:, 0], idx, x * np.sqrt(1 - pan)); np.add.at(notes_bus[:, 1], idx, x * np.sqrt(pan))
+for q, T_ in enumerate(tunnels):
+    N = SONGS[(q + 1) % 3]; L = T_["exit"] - T_["rim"]; nb = TUNB
+    mel = melodie(N, N["be"] - TUNB * N["B"], nb); step = N["B"] * k / 2
+    for j, (midi, bass) in enumerate(mel):
+        tj = T_["rim"] + j * step
+        if tj >= T_["exit"] - 1e-3: break
+        x = cloche(440 * 2 ** ((midi - 69) / 12), 1.2); x = (0.5 + 0.5 * j / len(mel)) * x / (np.abs(x).max() + 1e-9)   # de plus en plus fort
+        a = int(round(tj * SR)); idx = (np.arange(len(x)) + a) % n
+        np.add.at(notes_bus[:, 0], idx, x * 0.6); np.add.at(notes_bus[:, 1], idx, x * 0.6)
 notes_bus /= np.abs(notes_bus).max() + 1e-9
-loop = 0.42 * loop / (np.abs(loop).max() + 1e-9) + 0.62 * notes_bus        # la musique en dessous, les notes de la bille devant
+loop = notes_bus.copy()                     # SEULS les objets font la musique (plus de morceau en fond)
+# petite reverb pour lier les notes
+ir = np.random.default_rng(2).normal(0, 1, int(1.2 * SR)) * np.exp(-np.arange(int(1.2 * SR)) / SR / 0.35); ir[:int(0.01 * SR)] = 0; ir /= np.sqrt((ir ** 2).sum())
+for c in (0, 1):
+    M = 1 << (2 * n).bit_length(); y_ = np.fft.irfft(np.fft.rfft(loop[:, c], M) * np.fft.rfft(ir, M), M)
+    rv = y_[:n].copy(); rv[:len(y_) - n] += y_[n:2 * n][:n] if False else 0; loop[:, c] += 0.25 * rv
 loop /= max(1.0, np.abs(loop).max() / 0.98)
 loop = np.roll(loop, -int(round(OFF * SR)), axis=0)
 w = wave.open("audio_medley.wav", "wb"); w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR)
