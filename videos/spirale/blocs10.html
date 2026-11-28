@@ -50,7 +50,8 @@ function fallSeg(T, A, B, v0) {          // chute balistique de A vers B avec vi
 const TYPES = ['ressort', 'glace', 'booster', 'bumper', 'verre', 'portail', 'aimant', 'ventilo', 'canon'];
 // Les blocs d'un meme pouvoir s'enchainent en serie : le spectateur comprend l'effet en le voyant plusieurs fois.
 // PLAN[section] = [[premiere note, derniere note, type], ...] (numeros de note dans la section)
-const PLAN = { 0: [[1, 6, 'ressort']], 1: [[1, 5, 'booster'], [6, 10, 'portail']], 2: [[1, 6, 'verre'], [7, 12, 'aimant']] };
+const PLAN = { 0: [[1, 6, 'ressort']], 1: [[1, 5, 'booster'], [6, 10, 'glace']], 2: [[1, 6, 'verre'], [7, 12, 'aimant']] };
+// VITESSE CONSTANTE : la bille avance toujours a V ; c'est l'ecart entre les blocs (V x duree de la note) qui fait le rythme.
 const SEGS = [], BLOCKS = [], FUN = [], EVENTS = [];
 let ga = 0, gr = R, gz = 0, nType = 0;   // position courante (les fermetures utilisent des copies locales)
 let i = 0;
@@ -71,7 +72,7 @@ while (i < HITS.length) {
     const C = P(ac, R + RF, 0), top = zr - BR, k = HF / (RF / R0 - 1);
     const F = tn.drop - tn.rim, D = tn.exit - tn.drop;
     const arr = []; let th = ac + Math.PI; const n = 900;
-    for (let q = 0; q <= n; q++) { const u = q / n, rr = RF * Math.pow(R0 / RF, u * u); arr.push([th, rr]); th += V * (1 + 1.8 * u) / rr * F / n; }
+    for (let q = 0; q <= n; q++) { const u = q / n, rr = RF * Math.pow(R0 / RF, u * u); arr.push([th, rr]); th += V / rr * F / n; }
     const z_hole = top - HF + BR, z_e = z_hole - TUBE - 1.1, v0 = 1.5;
     const fn = { C, ac, top, k, arr, F, D, rim: tn.rim, drop: tn.drop, exit: tn.exit, z_hole, z_e, v0,
                  A: 2 * (z_hole - z_e - v0 * D) / (D * D), w_end: V * 2.8 / R0, sec: s };
@@ -106,13 +107,13 @@ while (i < HITS.length) {
     B = { ...Bn, z: Bn.z - 0.3 - 0.5 * K }; const fl = fallSeg(T - ts, { a: as, r: R, z }, B, 0);
     f = s_ => s_ < ts ? { p: P(a - V * s_ / R, R, z) } : fl(s_ - ts); blk.a1 = as;
   } else if (type === 'booster') {                   // vol rasant 1,6 fois plus loin, a travers un anneau
-    B = { ...Bn, a: a - 1.6 * V * T / R }; f = hopSeg(t0, T, A, B, 0.35);
+    f = hopSeg(t0, T, A, B, 0.3);   // meme vitesse, mais vol rasant
   } else if (type === 'bumper') {                    // ejectee sur le cote en arc puis revient
     const h = hopSeg(t0, T, A, B, hopNat(T));
     f = s_ => { const q = h(s_), u = s_ / T, ang = Math.atan2(q.p.y, q.p.x), dr = (0.6 + 0.8 * K) * Math.sin(Math.PI * u);
       return { p: q.p.clone().add(V3(Math.cos(ang) * dr, Math.sin(ang) * dr, 0)) }; };
   } else if (type === 'verre') {                     // casse la vitre et tombe sur un bloc plus bas
-    B = { ...Bn, a: a - 0.7 * V * T / R, z: Bn.z - 0.8 - 1.2 * K }; f = fallSeg(T, A, B, -0.5);
+    B = { ...Bn, z: Bn.z - 0.8 - 1.2 * K }; f = fallSeg(T, A, B, -0.5);
   } else if (type === 'portail') {                   // plonge dans le portail orange, ressort aussitot du bleu
     const E = { a: B.a, r: R, z: B.z + 0.8 + 0.8 * K }, tk = Math.min(0.08, T * 0.3);
     const fl = fallSeg(T - tk, { a: E.a, r: R, z: E.z - 0.3 }, B, -0.5);
@@ -120,14 +121,14 @@ while (i < HITS.length) {
     blk.tk = t0 + tk; blk.exit = E;
   } else if (type === 'aimant') {                    // aspiree vers l'aimant puis lachee
     const top = z + 0.9 + 0.8 * K, tu = 0.45 * T; tm = t0 + tu;
-    const fl = fallSeg(T - tu, { a, r, z: top - BR * 2 }, B, 0);
-    f = s_ => s_ < tu ? { p: P(a, r, z + (top - BR * 2 - z) * Math.pow(s_ / tu, 2.2)) } : fl(s_ - tu); blk.top = top;
+    const fl = fallSeg(T - tu, { a: a - V * tu / R, r, z: top - BR * 2 }, B, 0);
+    f = s_ => s_ < tu ? { p: P(a - V * s_ / R, r, z + (top - BR * 2 - z) * Math.pow(s_ / tu, 2.2)) } : fl(s_ - tu); blk.top = top; blk.ta = a - V * tu / R;
   } else if (type === 'ventilo') {                   // flotte sur le souffle puis retombe
     const ap = z + 1.0 + 1.0 * K, tu = 0.55 * T; tm = t0 + tu;
-    const fl = fallSeg(T - tu, { a: a - 0.3 * V * tu / R, r: R, z: ap }, B, 0);
-    f = s_ => s_ < tu ? { p: P(a - 0.3 * V * s_ / R, R, z + (ap - z) * Math.sin(s_ / tu * Math.PI / 2)) } : fl(s_ - tu);
+    const fl = fallSeg(T - tu, { a: a - V * tu / R, r: R, z: ap }, B, 0);
+    f = s_ => s_ < tu ? { p: P(a - V * s_ / R, R, z + (ap - z) * Math.sin(s_ / tu * Math.PI / 2)) } : fl(s_ - tu);
   } else {                                           // canon : la bille est tiree en ligne droite
-    B = { ...Bn, a: a - 1.3 * V * T / R, z: Bn.z + 0.2 }; f = hopSeg(t0, T, A, B, 0.6 + 0.6 * K);
+    B = { ...Bn, z: Bn.z + 0.2 }; f = hopSeg(t0, T, A, B, 0.6 + 0.6 * K);
   }
   blk.tm = tm;
   BLOCKS.push(blk);
@@ -413,7 +414,7 @@ for (const b of BLOCKS) {
   }
   if (T === 'aimant') {            // aimant en U suspendu au-dessus du bloc
     const o = baseBlock(b, { neon: 0xff3030 });
-    const g = new THREE.Group(); g.position.copy(P(b.a, b.r, b.top)); g.rotation.z = b.a; scene.add(g);
+    const g = new THREE.Group(); g.position.copy(P(b.ta, b.r, b.top)); g.rotation.z = b.ta; scene.add(g);
     const red = std(0xd01818, 0.35, 0.2), tipM = std(0xe8e8f0, 0.2, 1);
     const arm = (sx) => { const a_ = box(0.26, 0.26, 0.8, red); a_.position.set(sx, 0, 0.45); g.add(a_); const tp = box(0.27, 0.27, 0.16, tipM); tp.position.set(sx, 0, 0.08); g.add(tp); };
     arm(-0.36); arm(0.36);
