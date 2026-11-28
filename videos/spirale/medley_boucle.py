@@ -61,7 +61,13 @@ for q, S in enumerate(SONGS):
 loop = out[:n].copy()
 # niveaux : chaque morceau a peu pres au meme volume
 bl = load(BLOP); bl = bl / (np.abs(bl).max() + 1e-9)
+SANS_SON = {"verre"}          # la bille traverse (assiettes qui eclatent) : elle ne rebondit sur rien -> pas de « blop »
+def type_of(h):
+    for d, f_, ty in plan.get(h["sec"], []):
+        if d <= h["i"] <= f_: return ty
+    return "normal"
 for h in hits:
+    if type_of(h) in SANS_SON: continue
     a = int(round(h["t"] * SR)); m = min(len(bl), n - a); loop[a:a + m] += bl[:m] * 0.3
 loop /= max(1.0, np.abs(loop).max() / 0.98)
 loop = np.roll(loop, -int(round(OFF * SR)), axis=0)
