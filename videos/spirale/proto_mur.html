@@ -143,7 +143,7 @@ function trampoline() {                                 // RESSORT -> trampoline
     sp.scale.set(1, 1, 3.5); sp.position.set(Math.cos(a) * Rt * 0.86, Math.sin(a) * Rt * 0.86, h - 0.01); sp.rotation.set(0, Math.PI / 2, a); g.add(sp); }
   for (let q = 0; q < 4; q++) { const a = q * Math.PI / 2 + 0.6, l = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, h, 10), std(0x1f5fd0, 0.35));
     l.rotation.x = Math.PI / 2; l.position.set(Math.cos(a) * Rt, Math.sin(a) * Rt, h / 2); g.add(l); }
-  return [sh(g), h];
+  return [sh(g), h - 0.02];
 }
 function cerceau() {                                    // TIRE-BOUCHON -> cerceau raye sur un pied
   const g = new THREE.Group(), Rc = 0.75;
@@ -235,7 +235,32 @@ function shelfDecor(kind) {                             // etagere murale avec u
   return g;
 }
 const VIEW = params.get('vue') || 'objets';
-if (VIEW === 'colonne') {          // colonne en platre au centre, objets fixes dessus le long de la spirale
+// bille en verre avec un coeur lumineux A L'INTERIEUR (rien autour)
+function billeVerre(col = 0x9fd8ff) {
+  const g = new THREE.Group();
+  const verre = new THREE.Mesh(new THREE.SphereGeometry(0.28, 64, 32), new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, roughness: 0.02, metalness: 0, transmission: 1, thickness: 0.35, ior: 1.45, attenuationColor: new THREE.Color(0xeaf6ff), attenuationDistance: 3, clearcoat: 1, clearcoatRoughness: 0.02, envMapIntensity: 1.2 }));
+  verre.castShadow = false; g.add(verre);
+  const coeur = new THREE.Mesh(new THREE.IcosahedronGeometry(0.075, 3), new THREE.MeshBasicMaterial({ color: new THREE.Color(col).multiplyScalar(6), toneMapped: false }));
+  g.add(coeur);
+  const aura = new THREE.Mesh(new THREE.SphereGeometry(0.17, 32, 16), new THREE.MeshBasicMaterial({ color: new THREE.Color(col).multiplyScalar(1.2), transparent: true, opacity: 0.35, toneMapped: false, depthWrite: false }));
+  const L = new THREE.PointLight(col, 1.2, 3, 2); g.add(L);
+  return g;
+}
+if (VIEW === 'bille') {             // gros plan : bille posee exactement sur les objets, sans les traverser
+  wall.visible = false; scene.background = new THREE.Color(0x5e5e64);
+  const RC = 4.0;
+  const colm = new THREE.Mesh(new THREE.CylinderGeometry(RC, RC, 80, 160), new THREE.MeshStandardMaterial({ map: plasterTex(), roughness: 0.95 }));
+  colm.rotation.x = Math.PI / 2; colm.position.z = -20; colm.receiveShadow = true; scene.add(colm);
+  scene.children.filter(o => o.isPointLight && o.color.getHex() === 0xffb070).forEach(o => o.intensity = 0);
+  key.intensity = 0.9; key.position.set(14, -10, 18); scene.add(new THREE.HemisphereLight(0xffffff, 0x404048, 0.7));
+  [[2, -0.05, 0.5, 0x9fd8ff, true], [0, 0.17, 0.0, 0xff5a8a, true], [5, 0.39, -0.5, 0x7dffb0, false]].forEach(([k, a, z, c, pose]) => {
+    const [o, h] = EFF[k][1](); o.position.set(5 * Math.cos(a), 5 * Math.sin(a), z - h); o.rotation.z = a; scene.add(o);
+    const b = billeVerre(c);
+    b.position.copy(o.position).add(V3(0, 0, pose ? h + 0.28 : h + 1.0)); scene.add(b);     // contact exact : dessus de l'objet + rayon
+  });
+  camera.position.set(10.5 * Math.cos(0.17), 10.5 * Math.sin(0.17), 1.4); camera.lookAt(V3(4.8, 0.8, 0.0));
+} else if (VIEW === 'colonne') {          // colonne en platre au centre, objets fixes dessus le long de la spirale
   wall.visible = false; scene.background = new THREE.Color(0x5e5e64);
   const RC = 4.0;
   const col = new THREE.Mesh(new THREE.CylinderGeometry(RC, RC, 80, 160, 1, false), new THREE.MeshStandardMaterial({ map: plasterTex(), roughness: 0.95, color: 0xffffff }));
@@ -286,7 +311,7 @@ if (VIEW === 'colonne') {          // colonne en platre au centre, objets fixes 
   camera.position.set(12.5, -3, 7); camera.lookAt(V3(0, 0, -4));
 }
 const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: 4 }));
-composer.addPass(new RenderPass(scene, camera)); composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.2, 0.4, 0.95)); composer.addPass(new OutputPass());
+composer.addPass(new RenderPass(scene, camera)); composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.45, 0.2, 1.4)); composer.addPass(new OutputPass());
 window.renderAt = t => { composer.render(); return renderer.domElement.toDataURL('image/jpeg', 0.94); };
 window.END = 1; window.READY = true;
 </script></body></html>
