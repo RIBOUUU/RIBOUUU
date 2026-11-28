@@ -47,7 +47,7 @@ function fallSeg(T, A, B, v0) {          // chute balistique de A vers B avec vi
 }
 
 // ================= les 10 concepts de blocs =================
-const TYPES = ['ressort', 'slime', 'glace', 'booster', 'bumper', 'verre', 'portail', 'aimant', 'ventilo', 'tictac'];
+const TYPES = ['ressort', 'slime', 'glace', 'booster', 'bumper', 'verre', 'portail', 'aimant', 'ventilo', 'canon'];
 const SEGS = [], BLOCKS = [], FUN = [], EVENTS = [];
 let ga = 0, gr = R, gz = 0, nType = 0;   // position courante (les fermetures utilisent des copies locales)
 let i = 0;
@@ -57,8 +57,7 @@ while (i < HITS.length) {
   const kind = i > 0 && HITS[i - 1].sec !== s ? 'sortie' : 'normal';
   const nextIsRim = i < HITS.length - 1 && HITS[i + 1].sec !== s;
   const last = i === HITS.length - 1;
-  const canPair = !nextIsRim && !last && kind === 'normal' && i + 2 < HITS.length && HITS[i + 1].sec === s
-                  && HITS[i + 2].sec === s;
+  const canPair = !nextIsRim && !last && kind === 'normal' && (i - HITS.findIndex(x => x.sec === s)) % 2 === 1;   // bloc special une note sur deux
   const A = { a, r, z };
   if (nextIsRim) {                                   // saut dans l'entonnoir
     const tn = TUN[s]; const ac = a - V * T1 / R, zr = z - SLOPE * T1 * 0.6;
@@ -85,75 +84,51 @@ while (i < HITS.length) {
     SEGS.push({ t0, t1: t0 + T1, f: hopSeg(t0, T1, A, B, hopNat(T1)) });
     ga = B.a; gr = B.r; gz = B.z; i += 1; continue;
   }
-  // ----- bloc special : 2 notes -----
-  const T2 = HITS[i + 1].dur, TT = T1 + T2, tm = t0 + T1;
+  // ----- bloc special : UNE note (la bille touche toujours le bloc suivant pile sur la note suivante) -----
+  const T = T1, TT = T1;
   const type = TYPES[nType++ % TYPES.length];
-  const K = clamp((TT - 0.4) / 0.4, 0, 1);          // notes rapides -> effet plus compact (la bille ne part pas trop loin)
-  const blk = { type, a, r, z, t: t0, tm, sec: s, i, hits: [t0], T1, T2 };
-  let B, f;
-  if (type === 'ressort') {                          // trampoline : saut geant
-    B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT - 0.3 - 0.5 * K };
-    f = hopSeg(t0, TT, A, B, 1.4 + 2.2 * K);
-  } else if (type === 'slime') {                     // gluant : la bille reste collee puis se decolle
-    B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT };
-    const hp = hopSeg(tm, T2, A, B, hopNat(T2) + 0.4);
-    f = s_ => s_ < T1 ? { p: P(a, r, z), sq: 0.35 * Math.exp(-s_ / 0.12) + 0.12 * Math.sin(s_ * 30) * Math.exp(-s_ / 0.2) + 0.1 * sstep(T1 * 0.4, T1, s_) }
-                      : hp(s_ - T1);
-  } else if (type === 'glace') {                     // glisse sur la glace puis tombe du bord
-    const as = a - V * T1 / R; const S = { a: as, r: R, z };
-    B = { a: as - V * T2 / R, r: R, z: z - 0.6 - 0.8 * K - SLOPE * T2 };
-    const fl = fallSeg(T2, S, B, 0);
-    f = s_ => s_ < T1 ? { p: P(a - V * s_ / R, R, z) } : fl(s_ - T1);
-    blk.a1 = as;
-  } else if (type === 'booster') {                   // propulse : vol rapide et rasant a travers un anneau
-    B = { a: a - (1.3 + 0.7 * K) * V * TT / R, r: R, z: z - SLOPE * TT };
-    f = hopSeg(t0, TT, A, B, 0.5);
-  } else if (type === 'bumper') {                    // flipper : rebond sur un poteau lumineux sur le cote
-    const Pp = { a: a - 1.1 * V * T1 / R, r: R + 0.9 + 0.8 * K, z: z + 0.3 + 0.2 * K };
-    B = { a: Pp.a - 1.1 * V * T2 / R, r: R, z: z - SLOPE * TT };
-    const h1 = hopSeg(t0, T1, A, Pp, 0.9), h2 = hopSeg(tm, T2, Pp, B, 0.9);
-    f = s_ => s_ < T1 ? h1(s_) : h2(s_ - T1);
-    blk.post = Pp;
-  } else if (type === 'verre') {                     // traverse deux vitres qui explosent
-    B = { a: a - 0.8 * V * TT / R, r: R, z: z - 1.6 - 2.6 * K - SLOPE * TT };
-    f = fallSeg(TT, A, B, -1.0);
-    blk.pane2 = f(T1).p;
-  } else if (type === 'portail') {                   // aspire dans un portail, ressort par un autre
-    B = { a: a - (1.0 + 0.4 * K) * V * TT / R, r: R, z: z - SLOPE * TT };
-    const E = { a: B.a, r: R, z: B.z + 1.4 + 1.2 * K };
-        const tk = Math.min(0.1, T1 * 0.4);              // la bille plonge dans le portail orange puis ressort aussitot du bleu
-    const fl = fallSeg(TT - tk, { a: E.a, r: R, z: E.z - 0.3 }, B, -0.5);
+  const K = clamp((T - 0.24) / 0.3, 0, 1);           // notes rapides -> effet plus compact
+  const blk = { type, a, r, z, t: t0, sec: s, i, hits: [t0], T1: T, T2: 0 };
+  const Bn = { a: a - V * T / R, r: R, z: z - SLOPE * T };
+  let B = Bn, f, tm = t0 + T * 0.5;
+  if (type === 'ressort') {                          // trampoline : saut beaucoup plus haut
+    B = { ...Bn, z: Bn.z - 0.3 }; f = hopSeg(t0, T, A, B, 1.3 + 1.6 * K);
+  } else if (type === 'slime') {                     // reste colle 40 % de la note puis se decolle
+    const ts = 0.4 * T; tm = t0 + ts; const hp = hopSeg(tm, T - ts, A, B, hopNat(T - ts) + 0.2);
+    f = s_ => s_ < ts ? { p: P(a, r, z), sq: 0.35 * Math.exp(-s_ / 0.06) + 0.08 } : hp(s_ - ts);
+  } else if (type === 'glace') {                     // glisse 45 % de la note puis tombe du bord
+    const ts = 0.45 * T, as = a - V * ts / R; tm = t0 + ts;
+    B = { ...Bn, z: Bn.z - 0.3 - 0.5 * K }; const fl = fallSeg(T - ts, { a: as, r: R, z }, B, 0);
+    f = s_ => s_ < ts ? { p: P(a - V * s_ / R, R, z) } : fl(s_ - ts); blk.a1 = as;
+  } else if (type === 'booster') {                   // vol rasant 1,6 fois plus loin, a travers un anneau
+    B = { ...Bn, a: a - 1.6 * V * T / R }; f = hopSeg(t0, T, A, B, 0.35);
+  } else if (type === 'bumper') {                    // ejectee sur le cote en arc puis revient
+    const h = hopSeg(t0, T, A, B, hopNat(T));
+    f = s_ => { const q = h(s_), u = s_ / T, ang = Math.atan2(q.p.y, q.p.x), dr = (0.6 + 0.8 * K) * Math.sin(Math.PI * u);
+      return { p: q.p.clone().add(V3(Math.cos(ang) * dr, Math.sin(ang) * dr, 0)) }; };
+  } else if (type === 'verre') {                     // casse la vitre et tombe sur un bloc plus bas
+    B = { ...Bn, a: a - 0.7 * V * T / R, z: Bn.z - 0.8 - 1.2 * K }; f = fallSeg(T, A, B, -0.5);
+  } else if (type === 'portail') {                   // plonge dans le portail orange, ressort aussitot du bleu
+    const E = { a: B.a, r: R, z: B.z + 0.8 + 0.8 * K }, tk = Math.min(0.08, T * 0.3);
+    const fl = fallSeg(T - tk, { a: E.a, r: R, z: E.z - 0.3 }, B, -0.5);
     f = s_ => s_ < tk ? { p: P(a, r, z - 0.3 * s_ / tk) } : fl(s_ - tk);
-    blk.tk = t0 + tk;
-    blk.exit = E;
-  } else if (type === 'aimant') {                    // attire vers le haut, colle, puis lache
-    const top = z + 1.2 + 0.9 * K;
-    B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT };
-    const fl = fallSeg(T2, { a, r, z: top - BR * 2 }, B, 0);
-    f = s_ => s_ < T1 ? { p: P(a, r, z + (top - BR * 2 - z) * Math.pow(s_ / T1, 2.2)) } : fl(s_ - T1);
-    blk.top = top;
-  } else if (type === 'ventilo') {                   // souffle : la bille flotte puis retombe
-    const ap = z + 1.3 + 1.4 * K;
-    B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT };
-    const fl = fallSeg(T2, { a: a - 0.3 * V * T1 / R, r: R, z: ap }, B, 0);
-    f = s_ => {
-      if (s_ >= T1) return fl(s_ - T1);
-      const u = s_ / T1, e = Math.sin(u * Math.PI / 2);
-      return { p: P(a - 0.3 * V * s_ / R, R + 0.12 * Math.sin(u * 14), z + (ap - z) * e) };
-    };
-  } else {                                           // tictac : 3 petits rebonds sur un long bloc
-    const dA = V * T1 / R, half = T1 / 2;
-    B = { a: a - dA - V * T2 / R, r: R, z: z - SLOPE * TT };
-    const p1 = { a: a - dA / 2, r: R, z }, p2 = { a: a - dA, r: R, z };
-    const h1 = hopSeg(t0, half, A, p1, 0.32), h2 = hopSeg(t0 + half, half, p1, p2, 0.32), h3 = hopSeg(tm, T2, p2, B, hopNat(T2));
-    f = s_ => s_ < half ? h1(s_) : s_ < T1 ? h2(s_ - half) : h3(s_ - T1);
-    blk.hits.push(t0 + half, tm); blk.a1 = a - dA;
+    blk.tk = t0 + tk; blk.exit = E;
+  } else if (type === 'aimant') {                    // aspiree vers l'aimant puis lachee
+    const top = z + 0.9 + 0.8 * K, tu = 0.45 * T; tm = t0 + tu;
+    const fl = fallSeg(T - tu, { a, r, z: top - BR * 2 }, B, 0);
+    f = s_ => s_ < tu ? { p: P(a, r, z + (top - BR * 2 - z) * Math.pow(s_ / tu, 2.2)) } : fl(s_ - tu); blk.top = top;
+  } else if (type === 'ventilo') {                   // flotte sur le souffle puis retombe
+    const ap = z + 1.0 + 1.0 * K, tu = 0.55 * T; tm = t0 + tu;
+    const fl = fallSeg(T - tu, { a: a - 0.3 * V * tu / R, r: R, z: ap }, B, 0);
+    f = s_ => s_ < tu ? { p: P(a - 0.3 * V * s_ / R, R, z + (ap - z) * Math.sin(s_ / tu * Math.PI / 2)) } : fl(s_ - tu);
+  } else {                                           // canon : la bille est tiree en ligne droite
+    B = { ...Bn, a: a - 1.3 * V * T / R, z: Bn.z + 0.2 }; f = hopSeg(t0, T, A, B, 0.6 + 0.6 * K);
   }
-  if (type !== 'tictac') blk.hits.push(tm);
+  blk.tm = tm;
   BLOCKS.push(blk);
-  EVENTS.push({ type, t: t0, tm, T1, T2 });
-  SEGS.push({ t0, t1: t0 + TT, f });
-  ga = B.a; gr = B.r; gz = B.z; i += 2;
+  EVENTS.push({ type, t: t0, tm, T1: T, T2: 0 });
+  SEGS.push({ t0, t1: t0 + T, f });
+  ga = B.a; gr = B.r; gz = B.z; i += 1;
 }
 
 function funnelState(fn, t) {
@@ -361,24 +336,18 @@ for (const b of BLOCKS) {
     const domeM = new THREE.MeshStandardMaterial({ color: 0xff2bd6, emissive: 0xff2bd6, emissiveIntensity: 0.4, roughness: 0.3 });
     const dome = new THREE.Mesh(new THREE.SphereGeometry(0.42, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), domeM);
     dome.rotation.x = Math.PI / 2; dome.position.set(-0.35, 0, BH / 2); dome.scale.set(1, 0.45, 1); o.piv.add(dome);
-    // poteau : sa surface touche la bille au point Pp
-    const Pp = P(b.post.a, b.post.r + BR + 0.18, b.post.z);
-    const postM = new THREE.MeshStandardMaterial({ color: 0xffd400, emissive: 0xffd400, emissiveIntensity: 0.3, roughness: 0.3 });
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 3.2, 24), postM); post.rotation.x = Math.PI / 2; post.position.copy(Pp); post.castShadow = true; scene.add(post);
-    const waves = [[b.t, P(b.a, b.r, b.z - BR), 0xff2bd6], [b.tm, P(b.post.a, b.post.r + BR, b.post.z), 0xffd400]].map(([tt, pp, c]) => {
+    const waves = [[b.t, P(b.a, b.r, b.z - BR), 0xff2bd6]].map(([tt, pp, c]) => {
       const m = new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0, toneMapped: false, side: THREE.DoubleSide });
       const w = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.035, 8, 48), m); w.position.copy(pp); scene.add(w); return [tt, w, m];
     });
-    waves[1][1].quaternion.setFromUnitVectors(V3(0, 0, 1), P(b.post.a, 1, 0).normalize());
     anims.push(t => {
       domeM.emissiveIntensity = t < b.t ? 0.4 : 0.6 + 6 * Math.exp(-(t - b.t) / 0.25);
-      postM.emissiveIntensity = t < b.tm ? 0.3 : 0.5 + 6 * Math.exp(-(t - b.tm) / 0.25);
       for (const [tt, w, m] of waves) { const u = t - tt; if (u > 0 && u < 0.5) { w.visible = true; w.scale.setScalar(1 + u * 6); m.opacity = 1 - u / 0.5; m.color.multiplyScalar(1); } else w.visible = false; }
     });
     continue;
   }
   if (T === 'verre') {             // deux vitres qui volent en eclats
-    const panes = [[b.t, P(b.a, b.r, b.z - BR - 0.03)], [b.tm, ballPos(b.tm).add(V3(0, 0, 0))]];
+    const panes = [[b.t, P(b.a, b.r, b.z - BR - 0.03)]];
     const gmat = new THREE.MeshPhysicalMaterial({ color: 0xcfefff, roughness: 0.02, transparent: true, opacity: 0.35, emissive: 0x204060, clearcoat: 1, side: THREE.DoubleSide });
     panes.forEach(([tt, pp], q) => {
       const ang = Math.atan2(pp.y, pp.x);
@@ -474,21 +443,19 @@ for (const b of BLOCKS) {
     });
     continue;
   }
-  if (T === 'tictac') {            // long bloc tangent avec 3 pastilles qui s'allument a chaque tic
-    const am = (b.a + b.a1) / 2, len = R * Math.abs(b.a - b.a1) + 1.0;
-    const root = new THREE.Group(); scene.add(root);
-    root.position.copy(P(am, R * Math.cos((b.a - b.a1) / 2), b.z - BR - 0.2)); root.rotation.z = am + Math.PI / 2;
-    root.add(box(len, 0.85, 0.4, M_BODY));
-    const pads = [b.t, b.t + b.T1 / 2, b.tm].map((tt, q) => {
-      const m = glowMat(0xffe14a); const pd = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.03, 24), m);
-      pd.rotation.x = Math.PI / 2; pd.position.set((len - 1.0) / 2 - q * (len - 1.0) / 2, 0, 0.21); root.add(pd); return [tt, m];
-    });
-    const bz = root.position.z;
+  if (T === 'canon') {             // canon : la bille entre dans le fut et est tiree, bouffee de fumee
+    const o = baseBlock(b, { neon: 0xffc830, bh: 0.5, ztop: b.z - BR - 0.3 });
+    const dir = ballPos(b.t + 0.03).sub(ballPos(b.t)).normalize();
+    const brl = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.42, 0.9, 32, 1, true), std(0x2a2a30, 0.35, 0.8, { side: THREE.DoubleSide }));
+    brl.position.copy(P(b.a, b.r, b.z)).addScaledVector(dir, -0.2); brl.quaternion.setFromUnitVectors(V3(0, 1, 0), dir); scene.add(brl);
+    const rimM = glowMat(0xffc830); const rim = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.04, 8, 40), rimM);
+    rim.position.copy(brl.position).addScaledVector(dir, 0.45); rim.quaternion.setFromUnitVectors(V3(0, 0, 1), dir); scene.add(rim);
+    const puffs = []; for (let q = 0; q < 10; q++) { const m = new THREE.MeshBasicMaterial({ color: 0xffe6b0, transparent: true, opacity: 0, depthWrite: false });
+      const pf = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 8), m); scene.add(pf); puffs.push([pf, m, V3(R_() - 0.5, R_() - 0.5, R_() - 0.5).multiplyScalar(1.4).addScaledVector(dir, 1.5 * R_())]); }
     anims.push(t => {
-      let dz = 0;
-      for (const [tt, m] of pads) { const s = t - tt; m.color.setRGB(1, 0.88, 0.3).multiplyScalar(s < 0 ? 0.3 : 0.8 + 6 * Math.exp(-s / 0.2));
-        if (s > 0) dz -= 0.12 * Math.exp(-3.2 * s) * Math.sin(2 * Math.PI * 2.4 * s); }
-      root.position.z = bz + dz;
+      const s = t - b.t; rimM.color.setRGB(1, 0.78, 0.2).multiplyScalar(s < 0 ? 0.8 : 0.8 + 6 * Math.exp(-s / 0.2));
+      for (const [pf, m, v] of puffs) { pf.visible = s > 0 && s < 0.9; if (!pf.visible) continue;
+        pf.position.copy(rim.position).addScaledVector(v, 1 - Math.exp(-s / 0.25)); pf.scale.setScalar(1 + 3 * s); m.opacity = 0.7 * (1 - s / 0.9); }
     });
     continue;
   }
