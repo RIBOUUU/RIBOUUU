@@ -34,7 +34,7 @@ const SM = s => LOOP ? s % NSEC : s;                        // section « musica
 const WQ = w => LOOP ? Math.max(1, Math.round(w * PER / (2 * Math.PI))) * 2 * Math.PI / PER : w;   // oscillations periodiques
 const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 const R = 5.0, V = 5.5, BR = 0.28, SLOPE = 1.3;
-const RF = 1.5, R0 = 0.30, HF = 1.7, TUBE = 3.4;
+const RF = 1.5, R0 = 0.45, HF = 1.7, TUBE = 3.4, RT = 0.8;   // RT : rayon du tube (la bille y descend en helice)
 const NEON = [0xff6b00, 0xff1a05, 0xff0a66, 0x2ad1ff, 0xa040ff];
 const BALLC = [[0.1, 1.0, 0.75], [0.55, 0.35, 1.0], [1.0, 0.72, 0.08], [1.0, 0.25, 0.45], [0.3, 0.8, 1.0]];
 const P = (a, r, z) => V3(r * Math.cos(a), r * Math.sin(a), z);
@@ -88,10 +88,11 @@ while (i < HITS.length) {
     for (let q = 0; q <= n; q++) { const u = q / n, rr = RF * Math.pow(R0 / RF, u * u); arr.push([th, rr]); th += V / rr * F / n; }
     const z_hole = top - HF + BR, z_e = z_hole - TUBE - 1.1, v0 = 1.5;
     const fn = { C, ac, top, k, arr, F, D, rim: tn.rim, drop: tn.drop, exit: tn.exit, z_hole, z_e, v0,
-                 A: 2 * (z_hole - z_e - v0 * D) / (D * D), w_end: V * 2.8 / R0, sec: s };
+                 A: 2 * (z_hole - z_e - v0 * D) / (D * D), w_end: V / R0, sec: s };
     FUN.push(fn);
     SEGS.push({ t0: tn.rim, t1: tn.exit, f: s_ => ({ p: funnelPos(fn, tn.rim + s_) }) });
-    ga = ac; gr = R + RF; gz = z_e; i += 1; continue;
+    const pe = funnelPos(fn, tn.exit);               // la bille sort du tube la ou finit son helice
+    ga = Math.atan2(pe.y, pe.x); gr = Math.hypot(pe.x, pe.y); gz = z_e; i += 1; continue;
   }
   if (last) {                                         // final : grand saut sur place
     BLOCKS.push({ type: kind, a, r, z, t: t0, sec: s, i, hits: [t0] });
@@ -140,6 +141,10 @@ while (i < HITS.length) {
     const ap = z + 1.0 + 1.0 * K, tu = 0.55 * T; tm = t0 + tu;
     const fl = fallSeg(T - tu, { a: a - V * tu / R, r: R, z: ap }, B, 0);
     f = s_ => s_ < tu ? { p: P(a - V * s_ / R, R, z + (ap - z) * Math.sin(s_ / tu * Math.PI / 2)) } : fl(s_ - tu);
+  } else if (type === 'vrille') {                   // tire-bouchon : la bille tourne en spirale autour de sa trajectoire
+    const h = hopSeg(t0, T, A, B, hopNat(T)), rho = 0.3 + 0.25 * K; blk.rho = rho;
+    f = s_ => { const q = h(s_), u = s_ / T, ang = Math.atan2(q.p.y, q.p.x), c = Math.cos(2 * Math.PI * u), sn = Math.sin(2 * Math.PI * u);
+      return { p: q.p.clone().add(V3(Math.cos(ang) * rho * sn, Math.sin(ang) * rho * sn, rho * (1 - c))) }; };
   } else {                                           // canon : la bille est tiree en ligne droite
     B = { ...Bn, z: Bn.z + 0.2 }; f = hopSeg(t0, T, A, B, 0.6 + 0.6 * K);
   }
@@ -161,8 +166,8 @@ function funnelPos(fn, t) {
     return fn.C.clone().add(V3(rr * Math.cos(th), rr * Math.sin(th), fn.top - fn.k * (RF / rr - 1) + BR * 1.15));
   }
   const s = t - fn.drop, u = s / fn.D;
-  const th = fn.arr[fn.arr.length - 1][0] + fn.w_end * s * (1 - 0.5 * Math.min(u, 1));
-  const rr = R0 * Math.max(0, 1 - u / 0.3);
+  const th = fn.arr[fn.arr.length - 1][0] + fn.w_end * s;      // helice : jamais de ligne droite
+  const rr = R0;
   return fn.C.clone().add(V3(rr * Math.cos(th), rr * Math.sin(th), fn.z_hole - fn.v0 * s - fn.A * s * s / 2));
 }
 function ballState(t) {
@@ -465,6 +470,16 @@ for (const b of BLOCKS) {
     });
     continue;
   }
+  if (T === 'vrille') {            // anneau lumineux que la bille contourne en tire-bouchon
+    const o = baseBlock(b, { neon: 0xc45cff });
+    const tm = b.t + b.T1 * 0.5, c0 = ballPos(tm), ang = Math.atan2(c0.y, c0.x);
+    const ctr = c0.clone().add(V3(0, 0, -b.rho)).sub(V3(Math.cos(ang) * 0, Math.sin(ang) * 0, 0));
+    const tg = ballPos(tm + 0.01).sub(ballPos(tm - 0.01)); tg.z = 0; tg.normalize();
+    const rm = glowMat(0xc45cff), ring = new THREE.Mesh(new THREE.TorusGeometry(b.rho + 0.32, 0.04, 10, 64), rm);
+    ring.position.copy(ctr); ring.quaternion.setFromUnitVectors(V3(0, 0, 1), tg); scene.add(ring);
+    anims.push(t => { const s = t - b.t; rm.color.setRGB(0.77, 0.36, 1).multiplyScalar(s < 0 ? 1 : 1 + 5 * Math.exp(-s / 0.3)); ring.rotation.z += 0; });
+    continue;
+  }
   if (T === 'canon') {             // canon : la bille entre dans le fut et est tiree, bouffee de fumee
     const o = baseBlock(b, { neon: 0xffc830, bh: 0.5, ztop: b.z - BR - 0.3 });
     const dir = ballPos(b.t + 0.03).sub(ballPos(b.t)).normalize();
@@ -512,14 +527,14 @@ for (const fn of FUN) {
   anims.push(t => { const [th] = funnelState(fn, t); mat.uniforms.phase.value = -WQ(4.8) * t - 0.5 * 4 * (th - fn.arr[0][0]);
     mat.uniforms.glow.value = glow(t); ringM.color.copy(col).multiplyScalar(glow(t) * 0.6); });
   const z_top = fn.top - HF, z_bot = fn.z_e + 0.85;
-  const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, z_top - z_bot, 64, 1, true), new THREE.ShaderMaterial({
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(RT, RT, z_top - z_bot, 64, 1, true), new THREE.ShaderMaterial({
     transparent: true, side: THREE.DoubleSide, depthWrite: false,
     vertexShader: `varying vec3 vn; varying vec3 vw; void main(){ vn = normalize(mat3(modelMatrix)*normal); vec4 w = modelMatrix*vec4(position,1.); vw=w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
     fragmentShader: `varying vec3 vn; varying vec3 vw; void main(){ vec3 V = normalize(cameraPosition-vw); float f = 1.-abs(dot(normalize(vn),V));
       gl_FragColor = vec4(vec3(.85,.92,1.)*(.3+f), .06+.75*pow(f,3.)); }` }));
   tube.rotation.x = Math.PI / 2; tube.position.set(fn.C.x, fn.C.y, (z_top + z_bot) / 2); scene.add(tube);
   for (let zz = z_top - 0.3; zz > z_bot + 0.1; zz -= 0.55) {
-    const m = glowMat(col); const tr = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.035, 8, 48), m); tr.position.set(fn.C.x, fn.C.y, zz); scene.add(tr);
+    const m = glowMat(col); const tr = new THREE.Mesh(new THREE.TorusGeometry(RT + 0.03, 0.035, 8, 48), m); tr.position.set(fn.C.x, fn.C.y, zz); scene.add(tr);
     const dzz = fn.z_hole - zz, s_ = (-fn.v0 + Math.sqrt(fn.v0 ** 2 + 2 * fn.A * Math.max(dzz, 0))) / fn.A, tp = fn.drop + s_;
     anims.push(t => m.color.copy(col).multiplyScalar(0.25 + (t >= tp - 0.02 ? 6 * Math.exp(-Math.max(0, t - tp) / 0.25) : 0)));
   }
