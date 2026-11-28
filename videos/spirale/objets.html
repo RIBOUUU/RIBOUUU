@@ -1,0 +1,579 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Spirale 10 blocs</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+// Spirale EPIQUE refaite en temps reel (Three.js, sans Blender) avec 10 concepts de blocs.
+// Chaque bloc special occupe 2 notes : la 1re note = la bille touche le bloc, la 2e = l'evenement du bloc
+// (apogee du ressort, decollage du slime, bord de la glace, anneau du booster, poteau du bumper, 2e vitre,
+//  sortie du portail, contact de l'aimant, sommet du souffle du ventilo, 3e tic du tic-tac).
+// Axe Z vers le haut (comme dans Blender) : camera.up = (0,0,1).
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const params = new URLSearchParams(location.search);
+const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
+const TL = await (await fetch(params.get('tl') || 'timeline_epique.json')).json();
+// Mode BOUCLE : la periode (TL.hits / TL.tunnels) est repetee 4 fois a la suite (spirale continue) ; on filme
+// la 2e periode : la scene est periodique (copies decalees), donc la derniere image s'enchaine sur la premiere.
+const LOOP = !!TL.loop, PER = TL.period || 0, NSEC = LOOP ? TL.tunnels.length : 99, N0 = TL.hits.length;
+let HITS = TL.hits, TUN = TL.tunnels;
+if (LOOP) {
+  HITS = []; TUN = [];
+  for (let k = 0; k < 4; k++) {
+    for (const h of TL.hits) HITS.push({ ...h, t: h.t + k * PER, sec: h.sec + NSEC * k });
+    for (const tn of TL.tunnels) TUN.push({ rim: tn.rim + k * PER, drop: tn.drop + k * PER, exit: tn.exit + k * PER });
+  }
+}
+const END = LOOP ? PER : TL.end;
+const SM = s => LOOP ? s % NSEC : s;                        // section « musicale » (morceau)
+const WQ = w => LOOP ? Math.max(1, Math.round(w * PER / (2 * Math.PI))) * 2 * Math.PI / PER : w;   // oscillations periodiques
+const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+const R = 5.0, V = 5.5, BR = 0.28, SLOPE = 1.3;
+const RF = 1.5, R0 = 0.45, HF = 1.7, TUBE = 3.4, RT = 0.8;   // RT : rayon du tube (la bille y descend en helice)
+const NEON = [0xff6b00, 0xff1a05, 0xff0a66, 0x2ad1ff, 0xa040ff];
+const BALLC = [[0.1, 1.0, 0.75], [0.55, 0.35, 1.0], [1.0, 0.72, 0.08], [1.0, 0.25, 0.45], [0.3, 0.8, 1.0]];
+const P = (a, r, z) => V3(r * Math.cos(a), r * Math.sin(a), z);
+const sstep = (e0, e1, x) => { const u = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return u * u * (3 - 2 * u); };
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+function rnd(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+
+// saut parabolique de hauteur H au-dessus du point de depart (ou du point d'arrivee s'il est plus haut)
+function hopH(z0, z1, T, Hh) {
+  const dy = z1 - z0; Hh = Math.max(Hh, dy + 0.15);
+  const x = (Math.sqrt(2 * Hh) + Math.sqrt(2 * Hh - 2 * dy)) / T; const g = x * x;
+  return { g, vy: Math.sqrt(2 * g * Hh) };
+}
+const hopNat = T => Math.min(2.2, 0.15 + 1.6 * T);
+// segment generique : interpolation (a, r) lineaire, z parabolique
+function hopSeg(t0, T, A, B, Hh) {
+  const { g, vy } = hopH(A.z, B.z, T, Hh);
+  return s => ({ p: P(A.a + (B.a - A.a) * s / T, A.r + (B.r - A.r) * s / T, A.z + vy * s - g * s * s / 2) });
+}
+function fallSeg(T, A, B, v0) {          // chute balistique de A vers B avec vitesse verticale initiale v0
+  const g = 2 * (A.z + v0 * T - B.z) / (T * T);
+  return s => ({ p: P(A.a + (B.a - A.a) * s / T, A.r + (B.r - A.r) * s / T, A.z + v0 * s - g * s * s / 2) });
+}
+
+// ================= les 10 concepts de blocs =================
+const TYPES = ['ressort', 'glace', 'booster', 'bumper', 'verre', 'portail', 'aimant', 'ventilo', 'canon'];
+// Les blocs d'un meme pouvoir s'enchainent en serie : le spectateur comprend l'effet en le voyant plusieurs fois.
+// PLAN[section] = [[premiere note, derniere note, type], ...] (numeros de note dans la section)
+const PLAN = TL.plan || { 0: [[1, 6, 'ressort']], 1: [[1, 5, 'booster'], [6, 10, 'glace']], 2: [[1, 6, 'verre'], [7, 12, 'aimant']] };
+// VITESSE CONSTANTE : la bille avance toujours a V ; c'est l'ecart entre les blocs (V x duree de la note) qui fait le rythme.
+const SEGS = [], BLOCKS = [], FUN = [], EVENTS = [];
+let ga = 0, gr = R, gz = 0, nType = 0;   // position courante (les fermetures utilisent des copies locales)
+let i = 0;
+while (i < HITS.length) {
+  const a = ga, r = gr, z = gz;
+  const h = HITS[i], t0 = h.t, s = h.sec, T1 = h.dur;
+  const kind = i > 0 && HITS[i - 1].sec !== s ? 'sortie' : 'normal';
+  const nextIsRim = i < HITS.length - 1 && HITS[i + 1].sec !== s;
+  const last = i === HITS.length - 1;
+  const iSec = i - HITS.findIndex(x => x.sec === s);
+  const planned = (PLAN[SM(s)] || []).find(([d, f_]) => iSec >= d && iSec <= f_);
+  const canPair = !nextIsRim && !last && kind === 'normal' && !!planned;
+  const A = { a, r, z };
+  if (nextIsRim) {                                   // saut dans l'entonnoir
+    const tn = TUN[s]; const ac = a - V * T1 / R, zr = z - SLOPE * T1 * 0.6;
+    BLOCKS.push({ type: kind, a, r, z, t: t0, sec: s, i, hits: [t0] });
+    SEGS.push({ t0, t1: t0 + T1, f: hopSeg(t0, T1, A, { a: ac, r: R, z: zr }, hopNat(T1)) });
+    const C = P(ac, R + RF, 0), top = zr - BR, k = HF / (RF / R0 - 1);
+    const F = tn.drop - tn.rim, D = tn.exit - tn.drop;
+    const arr = []; let th = ac + Math.PI; const n = 900;
+    for (let q = 0; q <= n; q++) { const u = q / n, rr = RF * Math.pow(R0 / RF, u * u); arr.push([th, rr]); th += V / rr * F / n; }
+    const z_hole = top - HF + BR, z_e = z_hole - TUBE - 1.1, v0 = 1.5;
+    const fn = { C, ac, top, k, arr, F, D, rim: tn.rim, drop: tn.drop, exit: tn.exit, z_hole, z_e, v0,
+                 A: 2 * (z_hole - z_e - v0 * D) / (D * D), w_end: V / R0, sec: s };
+    FUN.push(fn);
+    SEGS.push({ t0: tn.rim, t1: tn.exit, f: s_ => ({ p: funnelPos(fn, tn.rim + s_) }) });
+    const pe = funnelPos(fn, tn.exit);               // la bille sort du tube la ou finit son helice
+    ga = Math.atan2(pe.y, pe.x); gr = Math.hypot(pe.x, pe.y); gz = z_e; i += 1; continue;
+  }
+  if (last) {                                         // final : grand saut sur place
+    BLOCKS.push({ type: kind, a, r, z, t: t0, sec: s, i, hits: [t0] });
+    SEGS.push({ t0, t1: t0 + T1, f: hopSeg(t0, T1, A, A, 3.0) }); i += 1; continue;
+  }
+  if (!canPair) {                                     // bloc normal (une note)
+    const B = { a: a - V * T1 / R, r: R, z: z - SLOPE * T1 };
+    BLOCKS.push({ type: kind, a, r, z, t: t0, sec: s, i, hits: [t0] });
+    SEGS.push({ t0, t1: t0 + T1, f: hopSeg(t0, T1, A, B, hopNat(T1)) });
+    ga = B.a; gr = B.r; gz = B.z; i += 1; continue;
+  }
+  // ----- bloc special : UNE note (la bille touche toujours le bloc suivant pile sur la note suivante) -----
+  const T = T1, TT = T1;
+  const type = planned[2]; nType++;
+  const K = clamp((T - 0.24) / 0.3, 0, 1);           // notes rapides -> effet plus compact
+  const blk = { type, a, r, z, t: t0, sec: s, i, hits: [t0], T1: T, T2: 0 };
+  const Bn = { a: a - V * T / R, r: R, z: z - SLOPE * T };
+  let B = Bn, f, tm = t0 + T * 0.5;
+  if (type === 'ressort') {                          // trampoline : saut beaucoup plus haut
+    B = { ...Bn, z: Bn.z - 0.3 }; f = hopSeg(t0, T, A, B, 1.3 + 1.6 * K);
+  } else if (type === 'slime') {                     // reste colle 40 % de la note puis se decolle
+    const ts = 0.4 * T; tm = t0 + ts; const hp = hopSeg(tm, T - ts, A, B, hopNat(T - ts) + 0.2);
+    f = s_ => s_ < ts ? { p: P(a, r, z), sq: 0.35 * Math.exp(-s_ / 0.06) + 0.08 } : hp(s_ - ts);
+  } else if (type === 'glace') {                     // glisse 45 % de la note puis tombe du bord
+    const ts = 0.45 * T, as = a - V * ts / R; tm = t0 + ts;
+    B = { ...Bn, z: Bn.z - 0.3 - 0.5 * K }; const fl = fallSeg(T - ts, { a: as, r: R, z }, B, 0);
+    f = s_ => s_ < ts ? { p: P(a - V * s_ / R, R, z) } : fl(s_ - ts); blk.a1 = as;
+  } else if (type === 'booster') {                   // vol rasant 1,6 fois plus loin, a travers un anneau
+    f = hopSeg(t0, T, A, B, 0.3);   // meme vitesse, mais vol rasant
+  } else if (type === 'bumper') {                    // ejectee sur le cote en arc puis revient
+    const h = hopSeg(t0, T, A, B, hopNat(T));
+    f = s_ => { const q = h(s_), u = s_ / T, ang = Math.atan2(q.p.y, q.p.x), dr = (0.6 + 0.8 * K) * Math.sin(Math.PI * u);
+      return { p: q.p.clone().add(V3(Math.cos(ang) * dr, Math.sin(ang) * dr, 0)) }; };
+  } else if (type === 'verre') {                     // casse la vitre et tombe sur un bloc plus bas
+    B = { ...Bn, z: Bn.z - 0.8 - 1.2 * K }; f = fallSeg(T, A, B, -0.5);
+  } else if (type === 'portail') {                   // plonge dans le portail orange, ressort aussitot du bleu
+    const E = { a: B.a, r: R, z: B.z + 0.8 + 0.8 * K }, tk = Math.min(0.08, T * 0.3);
+    const fl = fallSeg(T - tk, { a: E.a, r: R, z: E.z - 0.3 }, B, -0.5);
+    f = s_ => s_ < tk ? { p: P(a, r, z - 0.3 * s_ / tk) } : fl(s_ - tk);
+    blk.tk = t0 + tk; blk.exit = E;
+  } else if (type === 'aimant') {                    // aspiree vers l'aimant puis lachee
+    const top = z + 0.9 + 0.8 * K, tu = 0.45 * T; tm = t0 + tu;
+    const fl = fallSeg(T - tu, { a: a - V * tu / R, r, z: top - BR * 2 }, B, 0);
+    f = s_ => s_ < tu ? { p: P(a - V * s_ / R, r, z + (top - BR * 2 - z) * Math.pow(s_ / tu, 2.2)) } : fl(s_ - tu); blk.top = top; blk.ta = a - V * tu / R;
+  } else if (type === 'ventilo') {                   // flotte sur le souffle puis retombe
+    const ap = z + 1.0 + 1.0 * K, tu = 0.55 * T; tm = t0 + tu;
+    const fl = fallSeg(T - tu, { a: a - V * tu / R, r: R, z: ap }, B, 0);
+    f = s_ => s_ < tu ? { p: P(a - V * s_ / R, R, z + (ap - z) * Math.sin(s_ / tu * Math.PI / 2)) } : fl(s_ - tu);
+  } else if (type === 'vrille') {                   // tire-bouchon : la bille tourne en spirale autour de sa trajectoire
+    const h = hopSeg(t0, T, A, B, hopNat(T)), rho = 0.3 + 0.25 * K; blk.rho = rho;
+    f = s_ => { const q = h(s_), u = s_ / T, ang = Math.atan2(q.p.y, q.p.x), c = Math.cos(2 * Math.PI * u), sn = Math.sin(2 * Math.PI * u);
+      return { p: q.p.clone().add(V3(Math.cos(ang) * rho * sn, Math.sin(ang) * rho * sn, rho * (1 - c))) }; };
+  } else {                                           // canon : la bille est tiree en ligne droite
+    B = { ...Bn, z: Bn.z + 0.2 }; f = hopSeg(t0, T, A, B, 0.6 + 0.6 * K);
+  }
+  blk.tm = tm;
+  BLOCKS.push(blk);
+  EVENTS.push({ type, t: t0, tm, T1: T, T2: 0 });
+  SEGS.push({ t0, t1: t0 + T, f });
+  ga = B.a; gr = B.r; gz = B.z; i += 1;
+}
+
+function funnelState(fn, t) {
+  const u = clamp((t - fn.rim) / fn.F, 0, 1) * (fn.arr.length - 1);
+  const q = Math.min(Math.floor(u), fn.arr.length - 2), f = u - q;
+  return [fn.arr[q][0] * (1 - f) + fn.arr[q + 1][0] * f, fn.arr[q][1] * (1 - f) + fn.arr[q + 1][1] * f];
+}
+function funnelPos(fn, t) {
+  if (t < fn.drop) {
+    const [th, rr] = funnelState(fn, t);
+    return fn.C.clone().add(V3(rr * Math.cos(th), rr * Math.sin(th), fn.top - fn.k * (RF / rr - 1) + BR * 1.15));
+  }
+  const s = t - fn.drop, u = s / fn.D;
+  const th = fn.arr[fn.arr.length - 1][0] + fn.w_end * s;      // helice : jamais de ligne droite
+  const rr = R0;
+  return fn.C.clone().add(V3(rr * Math.cos(th), rr * Math.sin(th), fn.z_hole - fn.v0 * s - fn.A * s * s / 2));
+}
+function ballState(t) {
+  if (t < HITS[0].t) { const d = HITS[0].t - t; return { p: P(0, R, 9 * d * d + 2.4 * d) }; }
+  for (const sg of SEGS) if (t < sg.t1 || sg === SEGS[SEGS.length - 1]) return sg.f(t - sg.t0);
+}
+const ballPos = t => ballState(t).p;
+function smoothBall(t, win = 0.45, n = 13) {
+  const v = V3(0, 0, 0);
+  for (let k = 0; k < n; k++) v.add(ballPos(t + (k / (n - 1) - 0.5) * 2 * win));
+  return v.divideScalar(n);
+}
+const secAt = t => { const n = FUN.filter(fn => t >= fn.exit).length; return LOOP ? n % NSEC : n; };
+
+// ================= rendu =================
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.setPixelRatio(1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(2 * Math.atan(18 / 36) * 180 / Math.PI, W / H, 0.1, 400);
+camera.up.set(0, 0, 1);
+
+// ciel crepusculaire (degrade selon la hauteur de la direction de vue)
+const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 48, 24), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  vertexShader: `varying vec3 vd; void main(){ vd = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `varying vec3 vd;
+    vec3 ramp(float x){
+      vec3 c0=vec3(.035,.03,.09), c1=vec3(.95,.38,.22), c2=vec3(.38,.16,.34), c3=vec3(.10,.07,.22);
+      if(x<.25) return c0; if(x<.5) return mix(c0,c1,(x-.25)/.25); if(x<.62) return mix(c1,c2,(x-.5)/.12);
+      if(x<.92) return mix(c2,c3,(x-.62)/.30); return c3; }
+    void main(){ float x = vd.z*.5+.5; gl_FragColor = vec4(ramp(x)*.85, 1.); }`
+}));
+sky.visible = false; scene.background = new THREE.Color(0x8c8c92);
+const RC = 3.9;                                        // colonne centrale (le « mur »)
+const plaster = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 1024; const c = cv.getContext('2d');
+  c.fillStyle = '#96969c'; c.fillRect(0, 0, 1024, 1024); const r = rnd(12);
+  for (let k = 0; k < 4000; k++) { const v = r() > .5 ? 255 : 0; c.fillStyle = `rgba(${v},${v},${v},0.012)`; c.beginPath(); c.arc(r() * 1024, r() * 1024, 2 + r() * 18, 0, 7); c.fill(); }
+  const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(4, 30); t.colorSpace = THREE.SRGBColorSpace; return t; })();
+const column = new THREE.Mesh(new THREE.CylinderGeometry(RC, RC, 400, 160), new THREE.MeshStandardMaterial({ map: plaster, roughness: 0.95 }));
+column.rotation.x = Math.PI / 2; column.position.z = -120; column.receiveShadow = true; scene.add(column);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404048, 0.85));
+const sun = new THREE.DirectionalLight(0xfff4e8, 1.3); sun.castShadow = true;
+sun.shadow.mapSize.set(params.has('hq') ? 4096 : 2048, params.has('hq') ? 4096 : 2048); const sc_ = sun.shadow.camera; sc_.left = -9; sc_.right = 9; sc_.top = 9; sc_.bottom = -9; sc_.near = 1; sc_.far = 60;
+sun.shadow.bias = -0.0008; scene.add(sun); scene.add(sun.target);
+const SUN_DIR = V3(Math.cos(0.61) * Math.sin(0.96), Math.sin(0.61) * Math.sin(0.96), Math.cos(0.96)).normalize();
+
+const std = (c, ro = 0.4, me = 0, extra = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: ro, metalness: me, ...extra });
+const M_BODY = std(0x0c0c0e, 0.28, 0.2), M_STEEL = std(0xd0d0d8, 0.25, 1), M_DARK = std(0x1a1a20, 0.5, 0.3);
+const box = (w, d, h, m) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, d, h), m); o.castShadow = o.receiveShadow = true; return o; };
+const MAT = params.has('mat');          // version « rien ne brille » : pas de halo, pas de neons, pas de bloom
+const GLOWS = [];
+const glowMat = c => { const m = new THREE.MeshBasicMaterial({ color: new THREE.Color(c), toneMapped: false }); GLOWS.push(m); return m; };
+
+// chiffres lumineux (7 segments) sur la face exterieure des blocs
+const SEG7 = { 0: 'abcdef', 1: 'bc', 2: 'abged', 3: 'abgcd', 4: 'fgbc', 5: 'afgcd', 6: 'afgedc', 7: 'abc', 8: 'abcdefg', 9: 'abcfgd' };
+function digit(grp, d, x, w, h, mat) {
+  const t = 0.065, m = { a: [0, h / 2 - t / 2, w - 2 * t, t], d: [0, -h / 2 + t / 2, w - 2 * t, t], g: [0, 0, w - 2 * t, t],
+    f: [-w / 2 + t / 2, h / 4, t, h / 2 - t * 1.4], b: [w / 2 - t / 2, h / 4, t, h / 2 - t * 1.4],
+    e: [-w / 2 + t / 2, -h / 4, t, h / 2 - t * 1.4], c: [w / 2 - t / 2, -h / 4, t, h / 2 - t * 1.4] };
+  for (const k of SEG7[d]) { const [cy, cz, sw, sh] = m[k]; const o = new THREE.Mesh(new THREE.BoxGeometry(0.02, sw, sh), mat); o.position.set(x, cy, cz); grp.add(o); }
+}
+function frame(grp, x, w, h, mat) {
+  for (const [cy, cz, sw, sh] of [[0, h / 2 - .035, w * .92, .035], [0, -h / 2 + .035, w * .92, .035], [w * .46 - .0175, 0, .035, h * .92], [-w * .46 + .0175, 0, .035, h * .92]]) {
+    const o = new THREE.Mesh(new THREE.BoxGeometry(0.02, sw, sh), mat); o.position.set(x, cy, cz); grp.add(o);
+  }
+}
+
+const BOOMS = FUN.map(fn => fn.exit).concat([HITS[HITS.length - 1].t]);
+const AMP = [0.45, 0.55, 0.65, 0.7, 0.7];
+const anims = [];          // fonctions (t) => void appelees a chaque image
+const BL = 2.5, BH = 0.85;
+
+// bloc de base (corps sombre + chiffre + cadre neon) oriente radialement en (a, z)
+function baseBlock(b, opt = {}) {
+  const root = new THREE.Group(); scene.add(root);
+  const piv = new THREE.Group(); root.add(piv);
+  const bl = opt.bl || BL, w = opt.w || 0.9, bh = opt.bh || BH;
+  const rr = opt.rr != null ? opt.rr : b.r + 0.35;
+  root.position.copy(P(opt.ac != null ? opt.ac : b.a, rr, (opt.ztop != null ? opt.ztop : b.z - BR) - bh / 2));
+  root.rotation.z = (opt.ac != null ? opt.ac : b.a) + (opt.rot || 0);
+  if (!opt.noBody) piv.add(box(bl, w, bh, opt.mat || M_BODY));
+  const col = opt.neon != null ? opt.neon : NEON[SM(b.sec)];
+  const lit = glowMat(col);
+  if (!opt.noDigit) { digit(piv, ((b.i % N0) + 1) % 10, bl / 2 + 0.012, Math.min(w, 0.9) * 0.42, bh * 0.62, lit); frame(piv, bl / 2 + 0.012, w, bh, lit); }
+  const th = b.t, booms = BOOMS.filter(x => x > th + 0.01);
+  const base = new THREE.Color(col);
+  const imps = b.hits.map((x, q) => [x, q === 0 ? (b.type === 'sortie' ? 1.0 : AMP[SM(b.sec)]) : 0.5 * AMP[SM(b.sec)]]);
+  for (const hh of HITS) if (hh.sec === b.sec && th < hh.t && hh.t <= th + 1.6) imps.push([hh.t, 0.16 * AMP[SM(b.sec)]]);
+  for (const x of booms) imps.push([x, 0.35]);
+  const bz = root.position.z;
+  anims.push(t => {
+    let v = 0.0;
+    if (t >= th) { v = 0.3 + 5.0 * Math.exp(-(t - th) / 0.35); for (const x of b.hits) if (t >= x && x > th) v += 3.5 * Math.exp(-(t - x) / 0.3); for (const x of booms) if (t >= x) v += 4.0 * Math.exp(-(t - x) / 0.45); }
+    else v = 0.12;
+    lit.color.copy(base).multiplyScalar(v);
+    let dz = 0;
+    for (const [ti, am] of imps) { const s = t - ti; if (s > 0) dz -= am * Math.exp(-3.2 * s) * Math.sin(2 * Math.PI * 2.4 * s); }
+    root.position.z = bz + dz * (opt.dzScale || 1); piv.rotation.x = 0.35 * (dz * 0.9);
+  });
+  return { root, piv, lit, bl, w, bh };
+}
+
+// ---------- construction de chaque type ----------
+let R_ = rnd(11);
+const stdm = (c, ro = 0.6, me = 0, ex = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: ro, metalness: me, ...ex });
+const chromeM = stdm(0xe0e0e8, 0.12, 1), darkM = stdm(0x2a2a2e, 0.35, 0.8);
+const bx = (w, d, h, m, x = 0, y = 0, z = 0) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, d, h), m); o.position.set(x, y, z); o.castShadow = o.receiveShadow = true; return o; };
+const shd = o => { o.traverse(m => { if (m.isMesh) m.castShadow = m.receiveShadow = true; }); return o; };
+const woodTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 256; const c = cv.getContext('2d');
+  for (let y = 0; y < 256; y++) { const v = 0.5 + 0.5 * Math.sin(y * 0.25 + Math.sin(y * 0.05) * 3); c.fillStyle = `rgb(${150 + 40 * v | 0},${95 + 25 * v | 0},${55 + 15 * v | 0})`; c.fillRect(0, y, 256, 1); }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; return t; })();
+const woodM = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 });
+// bras metallique qui relie un objet a la colonne (sous l'objet)
+function arm(a, zb, rOut) {
+  const p0 = P(a, RC - 0.02, zb), p1 = P(a, rOut, zb), d = p1.clone().sub(p0);
+  const bar = bx(d.length(), 0.06, 0.06, darkM); bar.position.copy(p0).addScaledVector(d, 0.5); bar.rotation.z = a; scene.add(bar);
+  const pl = bx(0.04, 0.26, 0.36, darkM); pl.position.copy(p0).add(V3(0, 0, -0.1)); pl.rotation.z = a; scene.add(pl);
+}
+// rebond de l'objet sous les chocs (comme les blocs)
+function bounce(root, b, k = 1) {
+  const th = b.t, imps = [[th, 0.25 * k]];
+  for (const hh of HITS) if (hh.sec === b.sec && th < hh.t && hh.t <= th + 1.6) imps.push([hh.t, 0.05 * k]);
+  const bz = root.position.z;
+  anims.push(t => { let dz = 0; for (const [ti, am] of imps) { const s = t - ti; if (s > 0) dz -= am * Math.exp(-4 * s) * Math.sin(2 * Math.PI * 2.4 * s); } root.position.z = bz + dz; });
+}
+// petite etagere en bois a bord lumineux (objet « neutre » pour les notes normales)
+function etagere(b, big) {
+  const root = new THREE.Group(); scene.add(root); const L = big ? 1.4 : 1.0, Wd = big ? 0.9 : 0.7, T = 0.1;
+  root.position.copy(P(b.a, b.r, b.z - BR - T / 2)); root.rotation.z = b.a;
+  root.add(bx(L, Wd, T, woodM)); const lit = glowMat(NEON[SM(b.sec)]); const edge = new THREE.Mesh(new THREE.BoxGeometry(0.02, Wd * 0.96, 0.03), lit); edge.position.set(L / 2 + 0.01, 0, 0); root.add(edge);
+  const base = new THREE.Color(NEON[SM(b.sec)]);
+  anims.push(t => lit.color.copy(base).multiplyScalar(t < b.t ? 0.4 : 0.6 + 5 * Math.exp(-(t - b.t) / 0.3)));
+  arm(b.a, b.z - BR - T - 0.03, b.r - 0.2); bounce(root, b); return root;
+}
+for (const b of BLOCKS) {
+  R_ = rnd(11 + 97 * (b.i % N0));
+  const T = b.type, top = b.z - BR;                     // top = surface de contact (la bille ne rentre jamais dedans)
+  if (T === 'normal' || T === 'sortie') { etagere(b, T === 'sortie'); continue; }
+  if (T === 'ressort') {                                // TRAMPOLINE : la toile se creuse sous la bille
+    const sc = 0.55, Rt = 0.95 * sc / 0.55 * 0.55, h = 0.5;
+    const root = new THREE.Group(); scene.add(root); root.position.copy(P(b.a, b.r, top - h)); root.rotation.z = b.a;
+    const cadre = new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.045, 12, 64), stdm(0x1f5fd0, 0.35)); cadre.position.z = h; root.add(cadre);
+    const toile = new THREE.Mesh(new THREE.CircleGeometry(0.46, 40), stdm(0x111114, 0.8)); toile.position.z = h; root.add(toile);
+    for (let q = 0; q < 14; q++) { const aa = q / 14 * 6.283, sp = bx(0.1, 0.02, 0.02, chromeM, Math.cos(aa) * 0.53, Math.sin(aa) * 0.53, h); sp.rotation.z = aa; root.add(sp); }
+    for (let q = 0; q < 3; q++) { const aa = q * 2.094 + 0.5, l = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, h, 8), stdm(0x1f5fd0, 0.35)); l.rotation.x = Math.PI / 2; l.position.set(Math.cos(aa) * 0.6, Math.sin(aa) * 0.6, h / 2); root.add(l); }
+    shd(root); arm(b.a, top - h + 0.05, b.r - 0.62);
+    anims.push(t => { const s = t - b.t; toile.position.z = h - (s > 0 ? 0.18 * Math.exp(-s / 0.07) * Math.max(0, Math.cos(s * 18)) : 0); });
+    continue;
+  }
+  if (T === 'vrille') {                                 // CERCEAU raye : la bille tourne autour
+    etagere(b, false);
+    const tm = b.t + b.T1 * 0.5, c0 = ballPos(tm), ctr = c0.clone().add(V3(0, 0, -b.rho));
+    const tg = ballPos(tm + 0.01).sub(ballPos(tm - 0.01)); tg.z = 0; tg.normalize();
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 16; const c = cv.getContext('2d');
+    for (let x = 0; x < 512; x += 32) { c.fillStyle = (x / 32) % 2 ? '#ff3d8b' : '#ffe14a'; c.fillRect(x, 0, 32, 16); }
+    const tx = new THREE.CanvasTexture(cv); tx.colorSpace = THREE.SRGBColorSpace;
+    const hoop = new THREE.Mesh(new THREE.TorusGeometry(b.rho + 0.34, 0.045, 14, 96), new THREE.MeshStandardMaterial({ map: tx, roughness: 0.35 }));
+    hoop.position.copy(ctr); hoop.quaternion.setFromUnitVectors(V3(0, 0, 1), tg); hoop.castShadow = true; scene.add(hoop);
+    const st = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.3, 8), chromeM); st.rotation.x = Math.PI / 2; st.position.copy(ctr).add(V3(0, 0, -(b.rho + 0.34) - 0.15)); scene.add(st);
+    continue;
+  }
+  if (T === 'verre') {                                  // PILE D'ASSIETTES : elle eclate, la bille passe a travers
+    const por = stdm(0xf4f2ec, 0.18), lis = stdm(0x2a4fa8, 0.3);
+    const root = new THREE.Group(); scene.add(root); const n = 5, hh = n * 0.065;
+    root.position.copy(P(b.a, b.r, top - hh)); root.rotation.z = b.a;
+    const pts = [[0, 0], [0.3, 0], [0.36, 0.025], [0.47, 0.06], [0.48, 0.072], [0.43, 0.052], [0.28, 0.018], [0, 0.018]].map(([x, y]) => new THREE.Vector2(x, y));
+    for (let q = 0; q < n; q++) { const pl = new THREE.Mesh(new THREE.LatheGeometry(pts, 48), por); pl.rotation.x = Math.PI / 2; pl.position.z = q * 0.065; root.add(pl);
+      const r_ = new THREE.Mesh(new THREE.TorusGeometry(0.43, 0.007, 6, 48), lis); r_.position.z = q * 0.065 + 0.06; root.add(r_); }
+    shd(root); const support = new THREE.Group(); scene.add(support);
+    const sp = bx(0.9, 0.7, 0.05, darkM); sp.position.copy(P(b.a, b.r, top - hh - 0.03)); sp.rotation.z = b.a; support.add(sp); arm(b.a, top - hh - 0.06, b.r - 0.45);
+    const shards = [];
+    for (let k = 0; k < 18; k++) { const sz = 0.08 + 0.12 * R_(); const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, sz, 0.3 * sz * R_(), 0, 0.4 * sz, sz, 0], 3)); geo.computeVertexNormals();
+      const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xf4f2ec, roughness: 0.2, side: THREE.DoubleSide })); scene.add(m);
+      const p0 = P(b.a, b.r, top - hh * R_()).add(V3((R_() - 0.5) * 0.7, (R_() - 0.5) * 0.7, 0));
+      shards.push([m, p0, V3((R_() - 0.5) * 4, (R_() - 0.5) * 4, 0.5 + 2 * R_()), V3(R_() * 12, R_() * 12, R_() * 12)]); }
+    anims.push(t => { const s = t - b.t; root.visible = s < 0;
+      for (const [m, p0, v, w] of shards) { m.visible = s >= 0 && s < 1.8; if (!m.visible) continue; m.position.copy(p0).addScaledVector(v, s).add(V3(0, 0, -6 * s * s)); m.rotation.set(w.x * s, w.y * s, w.z * s); } });
+    continue;
+  }
+  if (T === 'bumper') {                                 // GANT DE BOXE : il frappe la bille vers l'exterieur
+    const root = new THREE.Group(); scene.add(root); root.position.copy(P(b.a, b.r, top - 0.25)); root.rotation.z = b.a;
+    root.add(bx(0.8, 0.65, 0.25, darkM, 0, 0, 0.125));
+    const glove = new THREE.Group(); root.add(glove);
+    const main = new THREE.Mesh(new THREE.SphereGeometry(0.24, 28, 14), stdm(0xc81414, 0.3)); main.scale.set(1.15, 0.95, 0.9); glove.add(main);
+    const pouce = new THREE.Mesh(new THREE.SphereGeometry(0.09, 14, 8), stdm(0xc81414, 0.3)); pouce.position.set(-0.04, 0.2, 0.09); glove.add(pouce);
+    const poignet = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.17, 0.2, 20), stdm(0xf2f2f2, 0.5)); poignet.rotation.z = Math.PI / 2; poignet.position.x = -0.28; glove.add(poignet);
+    const ressort = new THREE.Mesh(new THREE.TorusKnotGeometry(0.08, 0.016, 90, 6, 1, 7), chromeM); root.add(ressort);
+    shd(root); arm(b.a, top - 0.28, b.r - 0.4);
+    anims.push(t => { const s = t - b.t; const ext = s > -0.06 && s < 0.5 ? (s < 0 ? 0 : Math.exp(-s / 0.12) * Math.min(1, s / 0.03)) : 0;
+      const gx = -0.75 + 0.45 * ext; glove.position.set(gx, 0, 0.45); ressort.position.set((gx - 0.7) / 2 - 0.1, 0, 0.45); ressort.scale.set(1, 1, 1); ressort.rotation.y = Math.PI / 2; });
+    bounce(root, b, 0.6); continue;
+  }
+  if (T === 'aimant') {                                 // AIMANT en fer a cheval : aspire la bille puis la lache
+    etagere(b, false);
+    const u = new THREE.Group(); scene.add(u); const zt = b.top - BR + 0.08; u.position.copy(P(b.ta, R, zt)); u.rotation.z = b.ta;
+    const rouge = stdm(0xc0181c, 0.35);
+    const arc = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.08, 16, 40, Math.PI), rouge); arc.rotation.x = Math.PI / 2; arc.position.z = 0.4; u.add(arc);
+    for (const x of [-0.22, 0.22]) { const c = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.36, 20), rouge); c.rotation.x = Math.PI / 2; c.position.set(x, 0, 0.22); u.add(c);
+      const tp = new THREE.Mesh(new THREE.CylinderGeometry(0.081, 0.081, 0.1, 20), chromeM); tp.rotation.x = Math.PI / 2; tp.position.set(x, 0, -0.01); u.add(tp); }
+    shd(u); arm(b.ta, zt + 0.66, R); const ch = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.06 + 0.04, 6), chromeM); ch.rotation.x = Math.PI / 2; ch.position.copy(P(b.ta, R, zt + 0.62)); scene.add(ch);
+    anims.push(t => { const s = t - b.tm; u.position.z = zt + (s > 0 ? -0.06 * Math.exp(-s / 0.08) * Math.cos(s * 40) : 0); });
+    continue;
+  }
+  if (T === 'ventilo') {                                // VENTILATEUR de bureau couche : souffle vers le haut
+    const root = new THREE.Group(); scene.add(root); root.position.copy(P(b.a, b.r, top - 0.42)); root.rotation.z = b.a;
+    const blanc = stdm(0xeeeeea, 0.4);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.1, 32), blanc); base.rotation.x = Math.PI / 2; base.position.z = 0.05; root.add(base);
+    const pied = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.25, 10), blanc); pied.rotation.x = Math.PI / 2; pied.position.z = 0.2; root.add(pied);
+    const cage = new THREE.Group(); cage.position.z = 0.36; root.add(cage);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.018, 8, 64), chromeM); rim.position.z = 0.06; cage.add(rim);
+    for (let q = 0; q < 2; q++) { const r_ = new THREE.Mesh(new THREE.TorusGeometry(0.18 + q * 0.15, 0.008, 6, 48), chromeM); r_.position.z = 0.06; cage.add(r_); }
+    for (let q = 0; q < 12; q++) { const aa = q / 12 * 6.283, w = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.9, 4), chromeM); w.position.z = 0.06; w.rotation.z = aa; cage.add(w); }
+    const pales = new THREE.Group(); cage.add(pales);
+    for (let q = 0; q < 3; q++) { const p = new THREE.Mesh(new THREE.SphereGeometry(0.21, 14, 8), stdm(0x3aa0ff, 0.3)); p.scale.set(1, 0.42, 0.06); p.position.set(Math.cos(q * 2.094) * 0.21, Math.sin(q * 2.094) * 0.21, 0); p.rotation.z = q * 2.094; pales.add(p); }
+    shd(root); arm(b.a, top - 0.45, b.r - 0.36);
+    anims.push(t => { const s = t - b.t; pales.rotation.z = WQ(6) * t + (s > 0 ? 30 * Math.min(s, 1.5) : 0); });
+    continue;
+  }
+  etagere(b, false);
+}
+
+// ---------- entonnoirs + tubes ----------
+const FMATS = [];
+for (const fn of FUN) {
+  const col = new THREE.Color(NEON[SM(fn.sec + 1)]);
+  const nr = 56, na = 128, pos = [], idx = [];
+  for (let q = 0; q <= nr; q++) {
+    const u = q / nr, rr = (RF + 0.35) * Math.pow(R0 / (RF + 0.35), u), zz = rr >= RF ? 0 : -fn.k * (RF / rr - 1);
+    for (let j = 0; j < na; j++) { const ph = 2 * Math.PI * j / na; pos.push(rr * Math.cos(ph), rr * Math.sin(ph), zz); }
+  }
+  for (let q = 0; q < nr; q++) for (let j = 0; j < na; j++) { const a0 = q * na + j, a1 = q * na + (j + 1) % na; idx.push(a0, a1, a1 + na, a0, a1 + na, a0 + na); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setIndex(idx); geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x1d3f7a, roughness: 0.22, metalness: 0.65, side: THREE.DoubleSide }); mat.uniforms = { phase: { value: 0 }, glow: { value: 0 }, ldir: { value: 0 } };
+  const _old = ({ side: THREE.DoubleSide, toneMapped: false,
+    uniforms: { phase: { value: 0 }, glow: { value: 1 }, col: { value: col }, ldir: { value: SUN_DIR } }, defines: { MAXG: MAT ? '0.6' : '100.0' },
+    vertexShader: `varying vec3 vp; varying vec3 vn; varying vec3 vw; void main(){ vp = position; vn = normalize(mat3(modelMatrix)*normal);
+      vec4 w = modelMatrix*vec4(position,1.); vw = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
+    fragmentShader: `uniform float phase, glow; uniform vec3 col, ldir; varying vec3 vp; varying vec3 vn; varying vec3 vw;
+      void main(){ float r = length(vp.xy), a = atan(vp.y, vp.x);
+        float s = sin(log(max(r,.05))*7. + a*4. + phase); float e = clamp((s-.55)/.45, 0., 1.);
+        vec3 V = normalize(cameraPosition - vw); vec3 N = normalize(vn); if(dot(N,V)<0.) N=-N;
+        float dif = max(dot(N, ldir), 0.)*.35 + .08; float fr = pow(1.-max(dot(N,V),0.), 3.);
+        vec3 c = vec3(.015,.015,.02)*dif*10. + vec3(.5,.45,.6)*fr*.35 + col*e*min(glow*.55, MAXG);
+        gl_FragColor = vec4(c, 1.); }` });
+  FMATS.push(mat);
+  const fo = new THREE.Mesh(geo, mat); fo.position.set(fn.C.x, fn.C.y, fn.top); scene.add(fo);
+  const ringM = chromeM; const ring = new THREE.Mesh(new THREE.TorusGeometry(RF + 0.35, 0.06, 16, 128), ringM); ring.position.copy(fo.position); scene.add(ring);
+  const glow = t => { let v = 1.2 + 7.0 * Math.pow(sstep(fn.rim - 0.3, fn.drop, t), 2); if (t > fn.drop) v = 1.2 + 14.0 * Math.exp(-(t - fn.drop) / 0.35); return v; };
+  anims.push(t => { const [th] = funnelState(fn, t); mat.uniforms.phase.value = -WQ(4.8) * t - 0.5 * 4 * (th - fn.arr[0][0]);
+    mat.uniforms.glow.value = glow(t); });
+  const z_top = fn.top - HF, z_bot = fn.z_e + 0.85;
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(RT, RT, z_top - z_bot, 64, 1, true), new THREE.ShaderMaterial({
+    transparent: true, side: THREE.DoubleSide, depthWrite: false,
+    vertexShader: `varying vec3 vn; varying vec3 vw; void main(){ vn = normalize(mat3(modelMatrix)*normal); vec4 w = modelMatrix*vec4(position,1.); vw=w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
+    fragmentShader: `varying vec3 vn; varying vec3 vw; void main(){ vec3 V = normalize(cameraPosition-vw); float f = 1.-abs(dot(normalize(vn),V));
+      gl_FragColor = vec4(vec3(.85,.92,1.)*(.3+f), .06+.75*pow(f,3.)); }` }));
+  tube.rotation.x = Math.PI / 2; tube.position.set(fn.C.x, fn.C.y, (z_top + z_bot) / 2); scene.add(tube);
+  for (let zz = z_top - 0.3; zz > z_bot + 0.1; zz -= 0.55) {
+    const m = glowMat(col); const tr = new THREE.Mesh(new THREE.TorusGeometry(RT + 0.03, 0.035, 8, 48), m); tr.position.set(fn.C.x, fn.C.y, zz); scene.add(tr);
+    const dzz = fn.z_hole - zz, s_ = (-fn.v0 + Math.sqrt(fn.v0 ** 2 + 2 * fn.A * Math.max(dzz, 0))) / fn.A, tp = fn.drop + s_;
+    anims.push(t => m.color.copy(col).multiplyScalar(0.25 + (t >= tp - 0.02 ? 6 * Math.exp(-Math.max(0, t - tp) / 0.25) : 0)));
+  }
+}
+
+// ---------- fils de suspension de quelques blocs normaux ----------
+for (const b of BLOCKS) if (false) {
+  const p = P(b.a, b.r + 0.35 + BL / 2 - 0.15, b.z - BR + 15);
+  if (FUN.some(fn => Math.hypot(p.x - fn.C.x, p.y - fn.C.y) < RF + 0.6 && fn.top > b.z)) continue;
+  const w = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 6), M_STEEL); w.rotation.x = Math.PI / 2; w.position.copy(p); scene.add(w);
+}
+
+// ---------- poussieres lumineuses (bokeh) ----------
+{
+  const R2 = rnd(5), zmin = Math.min(...BLOCKS.map(b => b.z)) - 6;
+  const cols = [[1, .55, .25], [1, .35, .6], [.5, .7, 1]];
+  const pos = [], colr = [];
+  // en boucle : un motif de poussieres par periode, recopie (tourne + descend) d'une periode a l'autre
+  let z0 = zmin, z1 = 8, copies = [[0, 0]];
+  if (LOOP) {
+    const b1 = BLOCKS.find(b => b.sec === NSEC), b2 = BLOCKS.find(b => b.sec === 2 * NSEC);
+    const DA = b2.a - b1.a, DZ = b2.z - b1.z; z0 = b1.z + DZ - 4; z1 = b1.z + 6;
+    copies = [-1, 0, 1, 2, 3].map(k => [k * DA, k * DZ]);
+  }
+  const base = [];
+  for (let q = 0; q < 260; q++) {
+    const rr = 2.5 + 13.5 * R2(), aa = R2() * 6.283, zz = z0 + (z1 - z0) * R2();
+    const c = cols[Math.floor(R2() * 3)], k = 1.5 + 2 * R2();
+    if (Math.abs(rr - R) < 1.2) continue;
+    base.push([rr, aa, zz, c[0] * k, c[1] * k, c[2] * k]);
+  }
+  for (const [da, dz] of copies) for (const [rr, aa, zz, r_, g_, b_] of base) { pos.push(rr * Math.cos(aa + da), rr * Math.sin(aa + da), zz + dz); colr.push(r_, g_, b_); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
+  const cv = document.createElement('canvas'); cv.width = cv.height = 64; const cx = cv.getContext('2d');
+  const gr = cx.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.35, 'rgba(255,255,255,.6)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  cx.fillStyle = gr; cx.fillRect(0, 0, 64, 64);
+  if (false) scene.add(new THREE.Points(g, new THREE.PointsMaterial({ size: 0.22, map: new THREE.CanvasTexture(cv), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false })));
+}
+
+// ---------- bille ----------
+const ballM = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.02, transmission: 1, thickness: 0.35, ior: 1.45, clearcoat: 1, envMapIntensity: 1.2 });
+const ball = new THREE.Mesh(new THREE.SphereGeometry(BR, 64, 32), ballM); ball.castShadow = false;
+const ballG = new THREE.Group(); ballG.add(ball); scene.add(ballG);
+const blight = new THREE.PointLight(0xffffff, 1.2, 3, 2); ballG.add(blight);
+const coreM = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }); const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.075, 3), coreM); ballG.add(core);
+const halo = new THREE.Mesh(new THREE.SphereGeometry(BR * 1.9, 32, 16), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+ballG.add(halo);
+const dotTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 128; const cx = cv.getContext('2d');
+  const g = cx.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.18, 'rgba(255,255,255,1)');
+  g.addColorStop(0.3, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)'); cx.fillStyle = g; cx.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(cv); })();
+const marker = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex, depthTest: false, depthWrite: false, transparent: true, blending: THREE.AdditiveBlending, toneMapped: false }));
+marker.visible = false; halo.visible = false; marker.renderOrder = 999; marker.scale.setScalar(BR * 4.2); ballG.add(marker);
+function ballCol(t) {
+  let s0 = 0;
+  for (const fn of FUN) {
+    if (t >= fn.exit) { s0 = fn.sec + 1; continue; }
+    if (t > fn.drop) { const u = sstep(fn.drop, fn.exit, t), A = BALLC[SM(fn.sec) % 5], B = BALLC[SM(fn.sec + 1) % 5]; return A.map((v, j) => v * (1 - u) + B[j] * u); }
+    break;
+  }
+  return BALLC[SM(s0) % 5].slice();
+}
+
+// ---------- camera ----------
+function rig(t) {
+  const e = secAt(t), sb = smoothBall(t, 0.2, 9), lk = smoothBall(t + 0.08, 0.15, 7);
+  const a_ = Math.atan2(sb.y, sb.x);
+  const phi = a_ + 0.62 + 0.12 * Math.sin(WQ(0.35) * t) + 0.18 * e * Math.sin(WQ(0.9) * t);
+  const rc = 12.0 - 1.3 * e + 0.6 * Math.sin(WQ(0.42) * t), hc = 5.6 - 0.5 * e + 0.6 * Math.sin(WQ(0.31) * t + 1.2);
+  let pos = V3(rc * Math.cos(phi), rc * Math.sin(phi), sb.z + hc);
+  let tg = V3(lk.x, lk.y, lk.z - 0.5);
+  for (const fn of FUN) {
+    const wf = sstep(fn.rim - 0.45, fn.rim + 0.2, t) * (1 - sstep(fn.drop - 0.12, fn.drop + 0.12, t));
+    const wd = sstep(fn.drop - 0.12, fn.drop + 0.12, t) * (1 - sstep(fn.exit + 0.1, fn.exit + 0.7, t));
+    if (wf > 0) { const u = (t - fn.rim) / fn.F, psi = fn.ac + 0.35 + 0.6 * u;
+      pos.lerp(V3(fn.C.x + 3.3 * Math.cos(psi), fn.C.y + 3.3 * Math.sin(psi), fn.top + 6.3 - 1.2 * u), wf); tg.lerp(V3(fn.C.x, fn.C.y, fn.top - 0.9), wf); }
+    if (wd > 0) { const bp = ballPos(Math.min(t, fn.exit)), psi = fn.ac + 0.75;
+      pos.lerp(V3(fn.C.x + 5.2 * Math.cos(psi), fn.C.y + 5.2 * Math.sin(psi), bp.z + 1.0), wd); tg.lerp(V3(fn.C.x, fn.C.y, bp.z - 0.6), wd); }
+  }
+  const tf = HITS[HITS.length - 1].t, wz = LOOP ? 0 : sstep(tf - 0.1, tf + 1.3, t);
+  if (wz > 0) { const bp = ballPos(t), ab = Math.atan2(bp.y, bp.x) + 0.95;
+    pos.lerp(V3(13 * Math.cos(ab), 13 * Math.sin(ab), bp.z + 4.5), wz); tg.lerp(V3(bp.x * 0.7, bp.y * 0.7, bp.z - 1.5), wz); }
+  for (const tb of BOOMS) { const s = t - tb; if (s > 0 && s < 0.8) { const k = 0.22 * Math.exp(-6 * s); pos.add(V3(Math.sin(53 * s), Math.cos(47 * s), Math.sin(61 * s)).multiplyScalar(k)); } }
+  return [pos, tg];
+}
+
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: 4 }));
+composer.addPass(new RenderPass(scene, camera));
+if (!MAT) composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.45, 0.25, 1.3));
+composer.addPass(new OutputPass());
+
+function renderAt(t) {
+  for (const f of anims) f(t);
+  if (MAT) for (const m of GLOWS) { const c = m.color, k = Math.max(c.r, c.g, c.b, 1e-4); c.multiplyScalar(0.75 / k); }
+  const st = ballState(t);
+  ballG.position.copy(st.p);
+  const sc = st.sc != null ? st.sc : 1, sq = st.sq || 0;
+  ballG.scale.set(sc * (1 + 0.6 * sq), sc * (1 + 0.6 * sq), sc * (1 - sq));
+  ballG.position.z -= BR * sq * sc;
+  ballG.visible = sc > 0.01;
+  ball.rotation.set(WQ(2.1) * t, -WQ(3.3) * t, 0);
+  const c = ballCol(t); coreM.color.setRGB(c[0] * 6, c[1] * 6, c[2] * 6); blight.color.setRGB(...c);
+  if (MAT) { ballM.emissiveIntensity = 0.25; blight.intensity = 0; }
+  const boost = FUN.reduce((acc, fn) => acc + sstep(fn.rim, fn.drop, t) * (1 - sstep(fn.exit, fn.exit + 0.6, t)), 0);
+  blight.intensity = 1.2 + 1.5 * boost; halo.material.color.setRGB(...c); marker.material.color.setRGB(0.55 + 0.45 * c[0], 0.55 + 0.45 * c[1], 0.55 + 0.45 * c[2]);
+  let ps = V3(0, 0, 0), ts = V3(0, 0, 0);
+  for (let q = 0; q < 5; q++) { const [p_, t_] = rig(t + (q / 4 - 0.5) * 0.08); ps.add(p_); ts.add(t_); }
+  camera.position.copy(ps.divideScalar(5)); camera.lookAt(ts.divideScalar(5));
+  sky.position.copy(camera.position);
+  const sdir = LOOP ? SUN_DIR.clone().applyAxisAngle(V3(0, 0, 1), Math.atan2(st.p.y, st.p.x)) : SUN_DIR;
+  for (const m of FMATS) m.uniforms.ldir.value = sdir;
+  sun.position.copy(st.p).addScaledVector(sdir, 25); sun.target.position.copy(st.p);
+  if (!HQ) composer.render();
+}
+// ---------- haute qualite : reflets d'environnement + flou de mouvement (moyenne de sous-images) ----------
+const HQ = params.has('hq'), NSUB = +(params.get('sub') || 5), SHUTTER = 0.5 / 30;
+let acc, quadScene, quadCam, quadMat;
+if (HQ) {
+  const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.traverse(o => { if (o.material && 'envMapIntensity' in o.material) o.material.envMapIntensity = 0.35; });
+  acc = new THREE.WebGLRenderTarget(W, H, { type: THREE.FloatType });
+  quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1); quadScene = new THREE.Scene();
+  quadMat = new THREE.ShaderMaterial({ uniforms: { map: { value: null }, wgt: { value: 1 } }, depthTest: false, depthWrite: false, transparent: true,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+    vertexShader: 'varying vec2 vu; void main(){ vu = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+    fragmentShader: 'uniform sampler2D map; uniform float wgt; varying vec2 vu; void main(){ gl_FragColor = texture2D(map, vu) * wgt; }' });
+  quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), quadMat));
+  composer.renderToScreen = false;
+}
+function renderHQ(t) {
+  renderer.setRenderTarget(acc); renderer.setClearColor(0x000000, 0); renderer.clear();
+  for (let q = 0; q < NSUB; q++) {
+    renderAt(t + (q / (NSUB - 1) - 0.5) * SHUTTER); composer.render();
+    quadMat.uniforms.map.value = composer.readBuffer.texture; quadMat.uniforms.wgt.value = 1 / NSUB;
+    renderer.setRenderTarget(acc); renderer.autoClear = false; renderer.render(quadScene, quadCam); renderer.autoClear = true;
+  }
+  quadMat.uniforms.map.value = acc.texture; quadMat.uniforms.wgt.value = 1; quadMat.blending = THREE.NoBlending;
+  renderer.setRenderTarget(null); renderer.render(quadScene, quadCam); quadMat.blending = THREE.CustomBlending;
+}
+window.renderAt = t => { if (HQ) renderHQ(t); else renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.95); };
+window.ballNDC = t => { renderAt(t); const bp = ballPos(t); window.__dbg = [bp.toArray().map(x=>+x.toFixed(2)), camera.position.toArray().map(x=>+x.toFixed(2))]; const v = bp.clone().project(camera); return [v.x, v.y, v.z]; };
+window.OFF = LOOP ? PER + (TL.offset || 0) : 0;
+window.END = END; window.EVENTS = EVENTS; window.READY = true;
+if (!params.has('capture')) { const st = performance.now(); (function loop(){ renderAt(((performance.now()-st)/1000) % END); requestAnimationFrame(loop); })(); }
+</script></body></html>
