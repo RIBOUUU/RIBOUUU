@@ -87,11 +87,12 @@ while (i < HITS.length) {
   // ----- bloc special : 2 notes -----
   const T2 = HITS[i + 1].dur, TT = T1 + T2, tm = t0 + T1;
   const type = TYPES[nType++ % TYPES.length];
+  const K = clamp((TT - 0.4) / 0.4, 0, 1);          // notes rapides -> effet plus compact (la bille ne part pas trop loin)
   const blk = { type, a, r, z, t: t0, tm, sec: s, i, hits: [t0], T1, T2 };
   let B, f;
   if (type === 'ressort') {                          // trampoline : saut geant
-    B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT - 0.8 };
-    f = hopSeg(t0, TT, A, B, 3.6);
+    B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT - 0.3 - 0.5 * K };
+    f = hopSeg(t0, TT, A, B, 1.4 + 2.2 * K);
   } else if (type === 'slime') {                     // gluant : la bille reste collee puis se decolle
     B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT };
     const hp = hopSeg(tm, T2, A, B, hopNat(T2) + 0.4);
@@ -99,26 +100,26 @@ while (i < HITS.length) {
                       : hp(s_ - T1);
   } else if (type === 'glace') {                     // glisse sur la glace puis tombe du bord
     const as = a - V * T1 / R; const S = { a: as, r: R, z };
-    B = { a: as - V * T2 / R, r: R, z: z - 1.4 - SLOPE * T2 };
+    B = { a: as - V * T2 / R, r: R, z: z - 0.6 - 0.8 * K - SLOPE * T2 };
     const fl = fallSeg(T2, S, B, 0);
     f = s_ => s_ < T1 ? { p: P(a - V * s_ / R, R, z) } : fl(s_ - T1);
     blk.a1 = as;
   } else if (type === 'booster') {                   // propulse : vol rapide et rasant a travers un anneau
-    B = { a: a - 2.0 * V * TT / R, r: R, z: z - SLOPE * TT };
+    B = { a: a - (1.3 + 0.7 * K) * V * TT / R, r: R, z: z - SLOPE * TT };
     f = hopSeg(t0, TT, A, B, 0.5);
   } else if (type === 'bumper') {                    // flipper : rebond sur un poteau lumineux sur le cote
-    const Pp = { a: a - 1.1 * V * T1 / R, r: R + 1.7, z: z + 0.5 };
+    const Pp = { a: a - 1.1 * V * T1 / R, r: R + 0.9 + 0.8 * K, z: z + 0.3 + 0.2 * K };
     B = { a: Pp.a - 1.1 * V * T2 / R, r: R, z: z - SLOPE * TT };
     const h1 = hopSeg(t0, T1, A, Pp, 0.9), h2 = hopSeg(tm, T2, Pp, B, 0.9);
     f = s_ => s_ < T1 ? h1(s_) : h2(s_ - T1);
     blk.post = Pp;
   } else if (type === 'verre') {                     // traverse deux vitres qui explosent
-    B = { a: a - 0.8 * V * TT / R, r: R, z: z - 4.2 - SLOPE * TT };
+    B = { a: a - 0.8 * V * TT / R, r: R, z: z - 1.6 - 2.6 * K - SLOPE * TT };
     f = fallSeg(TT, A, B, -1.0);
     blk.pane2 = f(T1).p;
   } else if (type === 'portail') {                   // aspire dans un portail, ressort par un autre
-    B = { a: a - 1.4 * V * TT / R, r: R, z: z - SLOPE * TT };
-    const E = { a: B.a, r: R, z: B.z + 2.6 };
+    B = { a: a - (1.0 + 0.4 * K) * V * TT / R, r: R, z: z - SLOPE * TT };
+    const E = { a: B.a, r: R, z: B.z + 1.4 + 1.2 * K };
     const fl = fallSeg(T2, { a: E.a, r: R, z: E.z - 0.2 }, B, -1.5);
     const ks = Math.min(0.14, T1 * 0.45);
     f = s_ => {
@@ -127,13 +128,13 @@ while (i < HITS.length) {
     };
     blk.exit = E;
   } else if (type === 'aimant') {                    // attire vers le haut, colle, puis lache
-    const top = z + 2.1;
+    const top = z + 1.2 + 0.9 * K;
     B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT };
     const fl = fallSeg(T2, { a, r, z: top - BR * 2 }, B, 0);
     f = s_ => s_ < T1 ? { p: P(a, r, z + (top - BR * 2 - z) * Math.pow(s_ / T1, 2.2)) } : fl(s_ - T1);
     blk.top = top;
   } else if (type === 'ventilo') {                   // souffle : la bille flotte puis retombe
-    const ap = z + 2.7;
+    const ap = z + 1.3 + 1.4 * K;
     B = { a: a - V * TT / R, r: R, z: z - SLOPE * TT };
     const fl = fallSeg(T2, { a: a - 0.3 * V * T1 / R, r: R, z: ap }, B, 0);
     f = s_ => {
@@ -573,12 +574,12 @@ function ballCol(t) {
 
 // ---------- camera ----------
 function rig(t) {
-  const e = secAt(t), sb = smoothBall(t), lk = smoothBall(t + 0.25, 0.35, 9);
+  const e = secAt(t), sb = smoothBall(t, 0.2, 9), lk = smoothBall(t + 0.08, 0.15, 7);
   const a_ = Math.atan2(sb.y, sb.x);
   const phi = a_ + 0.62 + 0.12 * Math.sin(t * 0.35) + 0.18 * e * Math.sin(t * 0.9);
   const rc = 12.0 - 1.3 * e + 0.6 * Math.sin(t * 0.42), hc = 5.6 - 0.5 * e + 0.6 * Math.sin(t * 0.31 + 1.2);
   let pos = V3(rc * Math.cos(phi), rc * Math.sin(phi), sb.z + hc);
-  let tg = V3(lk.x * 0.85, lk.y * 0.85, lk.z - 1.0);
+  let tg = V3(lk.x, lk.y, lk.z - 0.5);
   for (const fn of FUN) {
     const wf = sstep(fn.rim - 0.45, fn.rim + 0.2, t) * (1 - sstep(fn.drop - 0.12, fn.drop + 0.12, t));
     const wd = sstep(fn.drop - 0.12, fn.drop + 0.12, t) * (1 - sstep(fn.exit + 0.1, fn.exit + 0.7, t));
@@ -612,8 +613,8 @@ function renderAt(t) {
   const boost = FUN.reduce((acc, fn) => acc + sstep(fn.rim, fn.drop, t) * (1 - sstep(fn.exit, fn.exit + 0.6, t)), 0);
   blight.intensity = 6 + 8 * boost; halo.material.color.setRGB(...c);
   let ps = V3(0, 0, 0), ts = V3(0, 0, 0);
-  for (let q = 0; q < 7; q++) { const [p_, t_] = rig(t + (q / 6 - 0.5) * 0.2); ps.add(p_); ts.add(t_); }
-  camera.position.copy(ps.divideScalar(7)); camera.lookAt(ts.divideScalar(7));
+  for (let q = 0; q < 5; q++) { const [p_, t_] = rig(t + (q / 4 - 0.5) * 0.08); ps.add(p_); ts.add(t_); }
+  camera.position.copy(ps.divideScalar(5)); camera.lookAt(ts.divideScalar(5));
   sky.position.copy(camera.position);
   sun.position.copy(st.p).addScaledVector(SUN_DIR, 25); sun.target.position.copy(st.p);
   composer.render();
