@@ -7,8 +7,8 @@ const srv = http.createServer((q, r) => { const f = path.join(__dirname, decodeU
   const p = await b.newPage({ viewport: { width: 270, height: 480 } });
   await p.goto(`http://localhost:${srv.address().port}/${process.env.SCENE || 'blocs10.html'}?capture${process.env.QS || ''}&w=270&h=480`);
   await p.waitForFunction('window.READY === true');
-  const end = await p.evaluate('window.END'); const bad = [];
-  for (let f = 0; f < Math.ceil(end * 30); f++) { const [x, y, z] = await p.evaluate(t => window.ballNDC(t), f / 30);
+  const end = await p.evaluate('window.END'), off = await p.evaluate('window.OFF || 0'); const bad = [];
+  for (let f = 0; f < Math.ceil(end * 30); f++) { const [x, y, z] = await p.evaluate(t => window.ballNDC(t), off + f / 30);
     if (Math.abs(x) > 0.8 || Math.abs(y) > 0.8 || z > 1) bad.push(`${f}:${x.toFixed(2)},${y.toFixed(2)}`); }
   console.log('hors cadre :', bad.length, bad.slice(0, 40).join(' ')); await b.close(); srv.close();
 });

@@ -18,7 +18,20 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 const params = new URLSearchParams(location.search);
 const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
 const TL = await (await fetch(params.get('tl') || 'timeline_epique.json')).json();
-const HITS = TL.hits, TUN = TL.tunnels, END = TL.end;
+// Mode BOUCLE : la periode (TL.hits / TL.tunnels) est repetee 4 fois a la suite (spirale continue) ; on filme
+// la 2e periode : la scene est periodique (copies decalees), donc la derniere image s'enchaine sur la premiere.
+const LOOP = !!TL.loop, PER = TL.period || 0, NSEC = LOOP ? TL.tunnels.length : 99, N0 = TL.hits.length;
+let HITS = TL.hits, TUN = TL.tunnels;
+if (LOOP) {
+  HITS = []; TUN = [];
+  for (let k = 0; k < 4; k++) {
+    for (const h of TL.hits) HITS.push({ ...h, t: h.t + k * PER, sec: h.sec + NSEC * k });
+    for (const tn of TL.tunnels) TUN.push({ rim: tn.rim + k * PER, drop: tn.drop + k * PER, exit: tn.exit + k * PER });
+  }
+}
+const END = LOOP ? PER : TL.end;
+const SM = s => LOOP ? s % NSEC : s;                        // section « musicale » (morceau)
+const WQ = w => LOOP ? Math.max(1, Math.round(w * PER / (2 * Math.PI))) * 2 * Math.PI / PER : w;   // oscillations periodiques
 const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 const R = 5.0, V = 5.5, BR = 0.28, SLOPE = 1.3;
 const RF = 1.5, R0 = 0.30, HF = 1.7, TUBE = 3.4;
@@ -62,7 +75,7 @@ while (i < HITS.length) {
   const nextIsRim = i < HITS.length - 1 && HITS[i + 1].sec !== s;
   const last = i === HITS.length - 1;
   const iSec = i - HITS.findIndex(x => x.sec === s);
-  const planned = (PLAN[s] || []).find(([d, f_]) => iSec >= d && iSec <= f_);
+  const planned = (PLAN[SM(s)] || []).find(([d, f_]) => iSec >= d && iSec <= f_);
   const canPair = !nextIsRim && !last && kind === 'normal' && !!planned;
   const A = { a, r, z };
   if (nextIsRim) {                                   // saut dans l'entonnoir
@@ -162,7 +175,7 @@ function smoothBall(t, win = 0.45, n = 13) {
   for (let k = 0; k < n; k++) v.add(ballPos(t + (k / (n - 1) - 0.5) * 2 * win));
   return v.divideScalar(n);
 }
-const secAt = t => FUN.filter(fn => t >= fn.exit).length;
+const secAt = t => { const n = FUN.filter(fn => t >= fn.exit).length; return LOOP ? n % NSEC : n; };
 
 // ================= rendu =================
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -227,13 +240,13 @@ function baseBlock(b, opt = {}) {
   root.position.copy(P(opt.ac != null ? opt.ac : b.a, rr, (opt.ztop != null ? opt.ztop : b.z - BR) - bh / 2));
   root.rotation.z = (opt.ac != null ? opt.ac : b.a) + (opt.rot || 0);
   if (!opt.noBody) piv.add(box(bl, w, bh, opt.mat || M_BODY));
-  const col = opt.neon != null ? opt.neon : NEON[b.sec];
+  const col = opt.neon != null ? opt.neon : NEON[SM(b.sec)];
   const lit = glowMat(col);
-  if (!opt.noDigit) { digit(piv, (b.i + 1) % 10, bl / 2 + 0.012, Math.min(w, 0.9) * 0.42, bh * 0.62, lit); frame(piv, bl / 2 + 0.012, w, bh, lit); }
+  if (!opt.noDigit) { digit(piv, ((b.i % N0) + 1) % 10, bl / 2 + 0.012, Math.min(w, 0.9) * 0.42, bh * 0.62, lit); frame(piv, bl / 2 + 0.012, w, bh, lit); }
   const th = b.t, booms = BOOMS.filter(x => x > th + 0.01);
   const base = new THREE.Color(col);
-  const imps = b.hits.map((x, q) => [x, q === 0 ? (b.type === 'sortie' ? 1.0 : AMP[b.sec]) : 0.5 * AMP[b.sec]]);
-  for (const hh of HITS) if (hh.sec === b.sec && th < hh.t && hh.t <= th + 1.6) imps.push([hh.t, 0.16 * AMP[b.sec]]);
+  const imps = b.hits.map((x, q) => [x, q === 0 ? (b.type === 'sortie' ? 1.0 : AMP[SM(b.sec)]) : 0.5 * AMP[SM(b.sec)]]);
+  for (const hh of HITS) if (hh.sec === b.sec && th < hh.t && hh.t <= th + 1.6) imps.push([hh.t, 0.16 * AMP[SM(b.sec)]]);
   for (const x of booms) imps.push([x, 0.35]);
   const bz = root.position.z;
   anims.push(t => {
@@ -249,8 +262,9 @@ function baseBlock(b, opt = {}) {
 }
 
 // ---------- construction de chaque type ----------
-const R_ = rnd(11);
+let R_ = rnd(11);
 for (const b of BLOCKS) {
+  R_ = rnd(11 + 97 * (b.i % N0));                          // memes eclats / fumees d'une periode a l'autre
   const T = b.type;
   if (T === 'normal' || T === 'sortie') {
     const o = baseBlock(b, T === 'sortie' ? { w: 1.4, bl: 2.6, rr: b.r } : {});
@@ -404,11 +418,11 @@ for (const b of BLOCKS) {
     const ex = P(b.exit.a, R, b.exit.z + 0.05);
     const [g2, rm2, dm2] = mk(0x2a8cff, ex, true);
     anims.push(t => {
-      dm1.uniforms.t.value = t; dm2.uniforms.t.value = -t;
+      dm1.uniforms.t.value = WQ(1) * t; dm2.uniforms.t.value = -WQ(1) * t;
       const k1 = t < b.t ? 0.8 : 0.8 + 3 * Math.exp(-(t - b.t) / 0.3), k2 = t < b.tk ? 0.8 : 0.8 + 3 * Math.exp(-(t - b.tk) / 0.3);
       dm1.uniforms.k.value = k1; dm2.uniforms.k.value = k2;
       rm1.color.setRGB(1, 0.54, 0).multiplyScalar(1.5 * k1); rm2.color.setRGB(0.16, 0.55, 1).multiplyScalar(1.5 * k2);
-      const sp = 1 + 0.08 * Math.sin(t * 7); g1.scale.setScalar(sp); g2.scale.setScalar(sp);
+      const sp = 1 + 0.08 * Math.sin(WQ(7) * t); g1.scale.setScalar(sp); g2.scale.setScalar(sp);
     });
     continue;
   }
@@ -425,7 +439,7 @@ for (const b of BLOCKS) {
     for (let q = 0; q < 4; q++) { const arc = new THREE.Mesh(new THREE.TorusGeometry(0.36 + q * 0.1, 0.012, 6, 40, Math.PI), fm); arc.rotation.x = -Math.PI / 2; arc.position.set(0, 0, 0.0); g.add(arc); }
     anims.push(t => {
       const pull = t > b.t && t < b.tm + 0.25 ? 1 : 0;
-      fm.opacity = pull * (0.5 + 0.5 * Math.sin(t * 40));
+      fm.opacity = pull * (0.5 + 0.5 * Math.sin(WQ(40) * t));
       const u = t - b.tm; g.position.z = b.top + (u > 0 ? -0.08 * Math.exp(-u / 0.08) * Math.cos(u * 40) : 0);
       red.emissive.setRGB(u > 0 ? 1.2 * Math.exp(-u / 0.3) : 0, 0, 0);
     });
@@ -444,7 +458,7 @@ for (const b of BLOCKS) {
     let ang = 0;
     anims.push(t => {
       const s = t - b.t, sp = s < 0 ? 2 : 2 + 40 * Math.exp(-Math.max(0, s - b.T1) / 0.5);
-      blades.rotation.z = t * (s < 0 ? 2 : 2) + (s > 0 ? 40 * Math.min(s, b.T1) + 40 * 0.5 * (1 - Math.exp(-Math.max(0, s - b.T1) / 0.5)) : 0);
+      blades.rotation.z = WQ(2) * t + (s > 0 ? 40 * Math.min(s, b.T1) + 40 * 0.5 * (1 - Math.exp(-Math.max(0, s - b.T1) / 0.5)) : 0);
       ringM.color.setRGB(0.6, 1, 0.9).multiplyScalar(s < 0 ? 0.8 : 0.8 + 4 * Math.exp(-s / 0.5));
       const on = s > 0 && s < b.T1 + b.T2 + 0.4; am.opacity = on ? 0.7 * Math.min(1, s / 0.1) * (1 - clamp((s - b.T1 - b.T2) / 0.4, 0, 1)) : 0;
       for (const [o_, ph, rr, sd] of air) { o_.visible = on; if (!on) continue; const hz = ((s * 6 + sd * 3) % 3); o_.position.copy(base).add(V3(rr * Math.cos(ph), rr * Math.sin(ph), hz)); }
@@ -470,8 +484,9 @@ for (const b of BLOCKS) {
 }
 
 // ---------- entonnoirs + tubes ----------
+const FMATS = [];
 for (const fn of FUN) {
-  const col = new THREE.Color(NEON[fn.sec + 1]);
+  const col = new THREE.Color(NEON[SM(fn.sec + 1)]);
   const nr = 56, na = 128, pos = [], idx = [];
   for (let q = 0; q <= nr; q++) {
     const u = q / nr, rr = (RF + 0.35) * Math.pow(R0 / (RF + 0.35), u), zz = rr >= RF ? 0 : -fn.k * (RF / rr - 1);
@@ -490,10 +505,11 @@ for (const fn of FUN) {
         float dif = max(dot(N, ldir), 0.)*.35 + .08; float fr = pow(1.-max(dot(N,V),0.), 3.);
         vec3 c = vec3(.015,.015,.02)*dif*10. + vec3(.5,.45,.6)*fr*.35 + col*e*min(glow*.55, MAXG);
         gl_FragColor = vec4(c, 1.); }` });
+  FMATS.push(mat);
   const fo = new THREE.Mesh(geo, mat); fo.position.set(fn.C.x, fn.C.y, fn.top); scene.add(fo);
   const ringM = glowMat(col); const ring = new THREE.Mesh(new THREE.TorusGeometry(RF + 0.35, 0.05, 12, 128), ringM); ring.position.copy(fo.position); scene.add(ring);
   const glow = t => { let v = 1.2 + 7.0 * Math.pow(sstep(fn.rim - 0.3, fn.drop, t), 2); if (t > fn.drop) v = 1.2 + 14.0 * Math.exp(-(t - fn.drop) / 0.35); return v; };
-  anims.push(t => { const [th] = funnelState(fn, t); mat.uniforms.phase.value = -(1.2 * t) * 4 - 0.5 * 4 * (th - fn.arr[0][0]);
+  anims.push(t => { const [th] = funnelState(fn, t); mat.uniforms.phase.value = -WQ(4.8) * t - 0.5 * 4 * (th - fn.arr[0][0]);
     mat.uniforms.glow.value = glow(t); ringM.color.copy(col).multiplyScalar(glow(t) * 0.6); });
   const z_top = fn.top - HF, z_bot = fn.z_e + 0.85;
   const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, z_top - z_bot, 64, 1, true), new THREE.ShaderMaterial({
@@ -510,7 +526,7 @@ for (const fn of FUN) {
 }
 
 // ---------- fils de suspension de quelques blocs normaux ----------
-for (const b of BLOCKS) if ((b.type === 'normal') && b.i % 3 === 0) {
+for (const b of BLOCKS) if ((b.type === 'normal') && (b.i % N0) % 3 === 0) {
   const p = P(b.a, b.r + 0.35 + BL / 2 - 0.15, b.z - BR + 15);
   if (FUN.some(fn => Math.hypot(p.x - fn.C.x, p.y - fn.C.y) < RF + 0.6 && fn.top > b.z)) continue;
   const w = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 30, 6), M_STEEL); w.rotation.x = Math.PI / 2; w.position.copy(p); scene.add(w);
@@ -521,11 +537,21 @@ for (const b of BLOCKS) if ((b.type === 'normal') && b.i % 3 === 0) {
   const R2 = rnd(5), zmin = Math.min(...BLOCKS.map(b => b.z)) - 6;
   const cols = [[1, .55, .25], [1, .35, .6], [.5, .7, 1]];
   const pos = [], colr = [];
-  for (let q = 0; q < 260; q++) {
-    const rr = 2.5 + 13.5 * R2(), aa = R2() * 6.283, zz = zmin + (8 - zmin) * R2();
-    if (Math.abs(rr - R) < 1.2) continue;
-    pos.push(rr * Math.cos(aa), rr * Math.sin(aa), zz); const c = cols[Math.floor(R2() * 3)], k = 1.5 + 2 * R2(); colr.push(c[0] * k, c[1] * k, c[2] * k);
+  // en boucle : un motif de poussieres par periode, recopie (tourne + descend) d'une periode a l'autre
+  let z0 = zmin, z1 = 8, copies = [[0, 0]];
+  if (LOOP) {
+    const b1 = BLOCKS.find(b => b.sec === NSEC), b2 = BLOCKS.find(b => b.sec === 2 * NSEC);
+    const DA = b2.a - b1.a, DZ = b2.z - b1.z; z0 = b1.z + DZ - 4; z1 = b1.z + 6;
+    copies = [-1, 0, 1, 2, 3].map(k => [k * DA, k * DZ]);
   }
+  const base = [];
+  for (let q = 0; q < 260; q++) {
+    const rr = 2.5 + 13.5 * R2(), aa = R2() * 6.283, zz = z0 + (z1 - z0) * R2();
+    const c = cols[Math.floor(R2() * 3)], k = 1.5 + 2 * R2();
+    if (Math.abs(rr - R) < 1.2) continue;
+    base.push([rr, aa, zz, c[0] * k, c[1] * k, c[2] * k]);
+  }
+  for (const [da, dz] of copies) for (const [rr, aa, zz, r_, g_, b_] of base) { pos.push(rr * Math.cos(aa + da), rr * Math.sin(aa + da), zz + dz); colr.push(r_, g_, b_); }
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
   const cv = document.createElement('canvas'); cv.width = cv.height = 64; const cx = cv.getContext('2d');
   const gr = cx.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.35, 'rgba(255,255,255,.6)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
@@ -546,17 +572,21 @@ const dotTex = (() => { const cv = document.createElement('canvas'); cv.width = 
 const marker = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex, depthTest: false, depthWrite: false, transparent: true, blending: THREE.AdditiveBlending, toneMapped: false }));
 marker.visible = !MAT; halo.visible = !MAT; marker.renderOrder = 999; marker.scale.setScalar(BR * 4.2); ballG.add(marker);
 function ballCol(t) {
-  let c = BALLC[0].slice();
-  FUN.forEach((fn, q) => { const u = sstep(fn.drop, fn.exit, t); c = c.map((v, j) => v * (1 - u) + BALLC[q + 1][j] * u); });
-  return c;
+  let s0 = 0;
+  for (const fn of FUN) {
+    if (t >= fn.exit) { s0 = fn.sec + 1; continue; }
+    if (t > fn.drop) { const u = sstep(fn.drop, fn.exit, t), A = BALLC[SM(fn.sec) % 5], B = BALLC[SM(fn.sec + 1) % 5]; return A.map((v, j) => v * (1 - u) + B[j] * u); }
+    break;
+  }
+  return BALLC[SM(s0) % 5].slice();
 }
 
 // ---------- camera ----------
 function rig(t) {
   const e = secAt(t), sb = smoothBall(t, 0.2, 9), lk = smoothBall(t + 0.08, 0.15, 7);
   const a_ = Math.atan2(sb.y, sb.x);
-  const phi = a_ + 0.62 + 0.12 * Math.sin(t * 0.35) + 0.18 * e * Math.sin(t * 0.9);
-  const rc = 12.0 - 1.3 * e + 0.6 * Math.sin(t * 0.42), hc = 5.6 - 0.5 * e + 0.6 * Math.sin(t * 0.31 + 1.2);
+  const phi = a_ + 0.62 + 0.12 * Math.sin(WQ(0.35) * t) + 0.18 * e * Math.sin(WQ(0.9) * t);
+  const rc = 12.0 - 1.3 * e + 0.6 * Math.sin(WQ(0.42) * t), hc = 5.6 - 0.5 * e + 0.6 * Math.sin(WQ(0.31) * t + 1.2);
   let pos = V3(rc * Math.cos(phi), rc * Math.sin(phi), sb.z + hc);
   let tg = V3(lk.x, lk.y, lk.z - 0.5);
   for (const fn of FUN) {
@@ -567,7 +597,7 @@ function rig(t) {
     if (wd > 0) { const bp = ballPos(Math.min(t, fn.exit)), psi = fn.ac + 0.75;
       pos.lerp(V3(fn.C.x + 5.2 * Math.cos(psi), fn.C.y + 5.2 * Math.sin(psi), bp.z + 1.0), wd); tg.lerp(V3(fn.C.x, fn.C.y, bp.z - 0.6), wd); }
   }
-  const tf = HITS[HITS.length - 1].t, wz = sstep(tf - 0.1, tf + 1.3, t);
+  const tf = HITS[HITS.length - 1].t, wz = LOOP ? 0 : sstep(tf - 0.1, tf + 1.3, t);
   if (wz > 0) { const bp = ballPos(t), ab = Math.atan2(bp.y, bp.x) + 0.95;
     pos.lerp(V3(13 * Math.cos(ab), 13 * Math.sin(ab), bp.z + 4.5), wz); tg.lerp(V3(bp.x * 0.7, bp.y * 0.7, bp.z - 1.5), wz); }
   for (const tb of BOOMS) { const s = t - tb; if (s > 0 && s < 0.8) { const k = 0.22 * Math.exp(-6 * s); pos.add(V3(Math.sin(53 * s), Math.cos(47 * s), Math.sin(61 * s)).multiplyScalar(k)); } }
@@ -588,7 +618,7 @@ function renderAt(t) {
   ballG.scale.set(sc * (1 + 0.6 * sq), sc * (1 + 0.6 * sq), sc * (1 - sq));
   ballG.position.z -= BR * sq * sc;
   ballG.visible = sc > 0.01;
-  ball.rotation.set(t * 2.1, -t * 3.3, 0);
+  ball.rotation.set(WQ(2.1) * t, -WQ(3.3) * t, 0);
   const c = ballCol(t); ballM.color.setRGB(...c); ballM.emissive.setRGB(...c); blight.color.setRGB(...c);
   if (MAT) { ballM.emissiveIntensity = 0.25; blight.intensity = 0; }
   const boost = FUN.reduce((acc, fn) => acc + sstep(fn.rim, fn.drop, t) * (1 - sstep(fn.exit, fn.exit + 0.6, t)), 0);
@@ -597,11 +627,14 @@ function renderAt(t) {
   for (let q = 0; q < 5; q++) { const [p_, t_] = rig(t + (q / 4 - 0.5) * 0.08); ps.add(p_); ts.add(t_); }
   camera.position.copy(ps.divideScalar(5)); camera.lookAt(ts.divideScalar(5));
   sky.position.copy(camera.position);
-  sun.position.copy(st.p).addScaledVector(SUN_DIR, 25); sun.target.position.copy(st.p);
+  const sdir = LOOP ? SUN_DIR.clone().applyAxisAngle(V3(0, 0, 1), Math.atan2(st.p.y, st.p.x)) : SUN_DIR;
+  for (const m of FMATS) m.uniforms.ldir.value = sdir;
+  sun.position.copy(st.p).addScaledVector(sdir, 25); sun.target.position.copy(st.p);
   composer.render();
 }
 window.renderAt = t => { renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.93); };
 window.ballNDC = t => { renderAt(t); const bp = ballPos(t); window.__dbg = [bp.toArray().map(x=>+x.toFixed(2)), camera.position.toArray().map(x=>+x.toFixed(2))]; const v = bp.clone().project(camera); return [v.x, v.y, v.z]; };
+window.OFF = LOOP ? PER + (TL.offset || 0) : 0;
 window.END = END; window.EVENTS = EVENTS; window.READY = true;
 if (!params.has('capture')) { const st = performance.now(); (function loop(){ renderAt(((performance.now()-st)/1000) % END); requestAnimationFrame(loop); })(); }
 </script></body></html>
