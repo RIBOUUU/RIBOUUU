@@ -17,7 +17,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const params = new URLSearchParams(location.search);
 const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
-const TL = await (await fetch('timeline_epique.json')).json();
+const TL = await (await fetch(params.get('tl') || 'timeline_epique.json')).json();
 const HITS = TL.hits, TUN = TL.tunnels, END = TL.end;
 const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 const R = 5.0, V = 5.5, BR = 0.28, SLOPE = 1.3;

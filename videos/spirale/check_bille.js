@@ -5,7 +5,7 @@ const srv = http.createServer((q, r) => { const f = path.join(__dirname, decodeU
 .listen(0, async () => {
   const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const p = await b.newPage({ viewport: { width: 270, height: 480 } });
-  await p.goto(`http://localhost:${srv.address().port}/${process.env.SCENE || 'blocs10.html'}?capture&w=270&h=480`);
+  await p.goto(`http://localhost:${srv.address().port}/${process.env.SCENE || 'blocs10.html'}?capture${process.env.QS || ''}&w=270&h=480`);
   await p.waitForFunction('window.READY === true');
   const end = await p.evaluate('window.END'); const bad = [];
   for (let f = 0; f < Math.ceil(end * 30); f++) { const [x, y, z] = await p.evaluate(t => window.ballNDC(t), f / 30);
