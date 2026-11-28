@@ -14,6 +14,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const params = new URLSearchParams(location.search);
 const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920);
@@ -206,7 +207,7 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 48, 24), new THREE.Shad
 scene.add(sky);
 scene.add(new THREE.HemisphereLight(0x8a7aff, 0x2a1020, 0.55));
 const sun = new THREE.DirectionalLight(0xffb88c, 2.4); sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048); const sc_ = sun.shadow.camera; sc_.left = -9; sc_.right = 9; sc_.top = 9; sc_.bottom = -9; sc_.near = 1; sc_.far = 60;
+sun.shadow.mapSize.set(params.has('hq') ? 4096 : 2048, params.has('hq') ? 4096 : 2048); const sc_ = sun.shadow.camera; sc_.left = -9; sc_.right = 9; sc_.top = 9; sc_.bottom = -9; sc_.near = 1; sc_.far = 60;
 sun.shadow.bias = -0.0008; scene.add(sun); scene.add(sun.target);
 const SUN_DIR = V3(Math.cos(0.61) * Math.sin(0.96), Math.sin(0.61) * Math.sin(0.96), Math.cos(0.96)).normalize();
 
@@ -645,9 +646,34 @@ function renderAt(t) {
   const sdir = LOOP ? SUN_DIR.clone().applyAxisAngle(V3(0, 0, 1), Math.atan2(st.p.y, st.p.x)) : SUN_DIR;
   for (const m of FMATS) m.uniforms.ldir.value = sdir;
   sun.position.copy(st.p).addScaledVector(sdir, 25); sun.target.position.copy(st.p);
-  composer.render();
+  if (!HQ) composer.render();
 }
-window.renderAt = t => { renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.93); };
+// ---------- haute qualite : reflets d'environnement + flou de mouvement (moyenne de sous-images) ----------
+const HQ = params.has('hq'), NSUB = +(params.get('sub') || 5), SHUTTER = 0.5 / 30;
+let acc, quadScene, quadCam, quadMat;
+if (HQ) {
+  const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.traverse(o => { if (o.material && 'envMapIntensity' in o.material) o.material.envMapIntensity = 0.35; });
+  acc = new THREE.WebGLRenderTarget(W, H, { type: THREE.FloatType });
+  quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1); quadScene = new THREE.Scene();
+  quadMat = new THREE.ShaderMaterial({ uniforms: { map: { value: null }, wgt: { value: 1 } }, depthTest: false, depthWrite: false, transparent: true,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+    vertexShader: 'varying vec2 vu; void main(){ vu = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+    fragmentShader: 'uniform sampler2D map; uniform float wgt; varying vec2 vu; void main(){ gl_FragColor = texture2D(map, vu) * wgt; }' });
+  quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), quadMat));
+  composer.renderToScreen = false;
+}
+function renderHQ(t) {
+  renderer.setRenderTarget(acc); renderer.setClearColor(0x000000, 0); renderer.clear();
+  for (let q = 0; q < NSUB; q++) {
+    renderAt(t + (q / (NSUB - 1) - 0.5) * SHUTTER); composer.render();
+    quadMat.uniforms.map.value = composer.readBuffer.texture; quadMat.uniforms.wgt.value = 1 / NSUB;
+    renderer.setRenderTarget(acc); renderer.autoClear = false; renderer.render(quadScene, quadCam); renderer.autoClear = true;
+  }
+  quadMat.uniforms.map.value = acc.texture; quadMat.uniforms.wgt.value = 1; quadMat.blending = THREE.NoBlending;
+  renderer.setRenderTarget(null); renderer.render(quadScene, quadCam); quadMat.blending = THREE.CustomBlending;
+}
+window.renderAt = t => { if (HQ) renderHQ(t); else renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.95); };
 window.ballNDC = t => { renderAt(t); const bp = ballPos(t); window.__dbg = [bp.toArray().map(x=>+x.toFixed(2)), camera.position.toArray().map(x=>+x.toFixed(2))]; const v = bp.clone().project(camera); return [v.x, v.y, v.z]; };
 window.OFF = LOOP ? PER + (TL.offset || 0) : 0;
 window.END = END; window.EVENTS = EVENTS; window.READY = true;
