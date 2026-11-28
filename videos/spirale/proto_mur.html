@@ -1,0 +1,160 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Prototype mur + objets</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+// Prototype : mur cylindrique realiste (brique ou pierre, textures generees) + objets du quotidien a toucher.
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+const params = new URLSearchParams(location.search);
+const W = +(params.get('w') || 1080), H = +(params.get('h') || 1920), WALL = params.get('mur') || 'brique';
+const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+function rnd(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0806);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(53, W / H, 0.05, 200); camera.up.set(0, 0, 1);
+
+// ---------- textures generees (couleur + relief) ----------
+function canvasTex(w, h, draw, repX, repY, srgb = true) {
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h; draw(cv.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repX, repY);
+  t.anisotropy = 8; if (srgb) t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function noise(ctx, w, h, a, seed) { const r = rnd(seed), d = ctx.getImageData(0, 0, w, h); for (let i = 0; i < d.data.length; i += 4) { const n = (r() - 0.5) * a; d.data[i] += n; d.data[i + 1] += n; d.data[i + 2] += n; } ctx.putImageData(d, 0, 0); }
+function wallTextures(kind) {
+  const R = rnd(kind === 'brique' ? 3 : 9), bricks = [];
+  const W_ = 1024, H_ = 1024;
+  if (kind === 'brique') {
+    const bw = 128, bh = 48, m = 6;
+    for (let y = 0, row = 0; y < H_; y += bh, row++) for (let x = -(row % 2) * bw / 2; x < W_; x += bw) {
+      const tone = R(); bricks.push([x + m / 2, y + m / 2, bw - m, bh - m, `rgb(${140 + tone * 50 | 0},${58 + tone * 28 | 0},${40 + tone * 18 | 0})`, R()]);
+    }
+  } else {
+    let y = 0; while (y < H_) { const bh = 70 + R() * 70; let x = -R() * 80; while (x < W_) { const bw = 110 + R() * 150, g = 120 + R() * 50 | 0;
+      bricks.push([x + 5, y + 5, bw - 10, bh - 10, `rgb(${g},${g - 6},${g - 18})`, R()]); x += bw; } y += bh; }
+  }
+  const col = canvasTex(W_, H_, (c) => {
+    c.fillStyle = kind === 'brique' ? '#8f8a80' : '#4a443c'; c.fillRect(0, 0, W_, H_);
+    for (const [x, y, w, h, f, v] of bricks) { c.fillStyle = f; c.beginPath(); c.roundRect(x, y, w, h, kind === 'brique' ? 3 : 14); c.fill();
+      c.fillStyle = `rgba(0,0,0,${0.08 + 0.12 * v})`; c.fillRect(x, y + h * 0.6, w, h * 0.4);       // salissures
+      for (let k = 0; k < 18; k++) { c.fillStyle = `rgba(${R() > .5 ? 255 : 0},${R() > .5 ? 230 : 0},200,${0.06 * R()})`; c.fillRect(x + R() * w, y + R() * h, 2 + R() * 10, 2 + R() * 6); } }
+    noise(c, W_, H_, 26, 4);
+  }, 6, 3);
+  const bump = canvasTex(W_, H_, (c) => {
+    c.fillStyle = '#202020'; c.fillRect(0, 0, W_, H_);
+    for (const [x, y, w, h] of bricks) { const g = c.createLinearGradient(x, y, x, y + h); g.addColorStop(0, '#d8d8d8'); g.addColorStop(1, '#a8a8a8');
+      c.fillStyle = g; c.beginPath(); c.roundRect(x, y, w, h, kind === 'brique' ? 4 : 18); c.fill(); }
+    noise(c, W_, H_, 60, 5);
+  }, 6, 3, false);
+  return [col, bump];
+}
+
+// ---------- mur cylindrique (vu de l'interieur) + sol en parquet + appliques lumineuses ----------
+const RW = 15;
+const [wc, wb] = wallTextures(WALL);
+const wall = new THREE.Mesh(new THREE.CylinderGeometry(RW, RW, 60, 160, 1, true),
+  new THREE.MeshStandardMaterial({ map: wc, bumpMap: wb, bumpScale: 2.5, roughness: 0.92, side: THREE.BackSide }));
+wall.rotation.x = Math.PI / 2; wall.position.z = -10; wall.receiveShadow = true; scene.add(wall);
+for (let q = 0; q < 6; q++) {                          // appliques murales (lampes chaudes)
+  const a = q * Math.PI / 3, z = 2.5 - (q % 2) * 6;
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.22, 24, 12), new THREE.MeshBasicMaterial({ color: 0xffd9a0 }));
+  lamp.position.set((RW - 0.35) * Math.cos(a), (RW - 0.35) * Math.sin(a), z); scene.add(lamp);
+  const L = new THREE.PointLight(0xffb070, 60, 22, 1.8); L.position.copy(lamp.position).multiplyScalar(0.96); scene.add(L);
+  const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.06, 24), new THREE.MeshStandardMaterial({ color: 0x8a6a3a, metalness: 1, roughness: 0.35 }));
+  plate.rotation.z = a; plate.rotation.x = 0; plate.position.copy(lamp.position).multiplyScalar(0.995); plate.lookAt(0, 0, z); plate.rotateX(Math.PI / 2); scene.add(plate);
+}
+scene.add(new THREE.HemisphereLight(0xffe2c0, 0x2a1a10, 0.35));
+const key = new THREE.DirectionalLight(0xfff0dd, 1.6); key.position.set(6, -4, 14); key.castShadow = true; key.shadow.mapSize.set(4096, 4096);
+Object.assign(key.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12, near: 1, far: 50 }); key.shadow.bias = -0.0005; scene.add(key);
+
+// ---------- les objets « humains » ----------
+const std = (c, ro = 0.6, me = 0, ex = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: ro, metalness: me, ...ex });
+const sh = o => { o.traverse(m => { if (m.isMesh) { m.castShadow = m.receiveShadow = true; } }); return o; };
+const boxM = (w, d, h, m, x = 0, y = 0, z = 0) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, d, h), m); o.position.set(x, y, z); return o; };
+const pages = canvasTex(64, 256, (c, w, h) => { c.fillStyle = '#efe6cf'; c.fillRect(0, 0, w, h); for (let y = 0; y < h; y += 3) { c.fillStyle = `rgba(120,100,70,${0.15 + 0.15 * Math.random()})`; c.fillRect(0, y, w, 1); } }, 1, 1);
+function livres() {                                     // pile de 3 livres
+  const g = new THREE.Group(); const cols = [0x7a1f1f, 0x1f3f6a, 0x2f5a2a]; let z = 0;
+  [[1.7, 1.15, 0.24], [1.55, 1.05, 0.2], [1.45, 0.95, 0.26]].forEach(([w, d, h], q) => {
+    const b = new THREE.Group(); b.rotation.z = (q - 1) * 0.12;
+    const cover = std(cols[q], 0.55); b.add(boxM(w, d, h, cover, 0, 0, 0));
+    const pg = new THREE.MeshStandardMaterial({ map: pages, roughness: 0.9 }); b.add(boxM(w - 0.06, d - 0.04, h - 0.05, pg, 0.04, 0, 0));
+    const gold = std(0xd4a64a, 0.3, 1); b.add(boxM(0.03, d * 0.6, 0.03, gold, -w / 2 - 0.001, 0, h * 0.15)); b.add(boxM(0.03, d * 0.6, 0.03, gold, -w / 2 - 0.001, 0, -h * 0.15));
+    b.position.z = z + h / 2; z += h; g.add(b);
+  });
+  return [sh(g), z];
+}
+function valise() {                                     // valise en cuir avec sangles et poignee
+  const g = new THREE.Group(), cuir = std(0x6b3a1e, 0.45, 0, { envMapIntensity: 0.6 }), sangle = std(0x3a2414, 0.6), metal = std(0xc9a24e, 0.25, 1);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.7, 1.1, 1, 1, 1), cuir); body.position.z = 0.55; g.add(body);
+  for (const x of [-0.5, 0.5]) { g.add(boxM(0.14, 0.72, 1.12, sangle, x, 0, 0.55)); g.add(boxM(0.16, 0.06, 0.12, metal, x, 0.37, 0.7)); }
+  const anse = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.04, 10, 24, Math.PI), sangle); anse.rotation.x = Math.PI / 2; anse.position.set(0, 0, 1.1); anse.rotation.y = 0; g.add(anse);
+  for (const x of [-0.88, 0.88]) for (const y of [-0.33, 0.33]) for (const z of [0.02, 1.08]) g.add(boxM(0.08, 0.08, 0.08, metal, x, y, z));
+  return [sh(g), 1.1];
+}
+function tambour() {                                    // tambour : fut rouge, cordes en zigzag, peau blanche
+  const g = new THREE.Group(), R_ = 0.6, h = 0.8;
+  g.add(new THREE.Mesh(new THREE.CylinderGeometry(R_, R_, h, 48, 1, true), std(0xa0141c, 0.35, 0, { side: THREE.DoubleSide })).rotateX(Math.PI / 2).translateY(h / 2));
+  const peau = new THREE.Mesh(new THREE.CircleGeometry(R_ * 0.98, 48), std(0xf2ead8, 0.8)); peau.position.z = h + 0.005; g.add(peau);
+  for (const z of [0.04, h - 0.04]) { const c = new THREE.Mesh(new THREE.TorusGeometry(R_ + 0.02, 0.04, 10, 64), std(0xe8e0d0, 0.5)); c.position.z = z; g.add(c); }
+  const corde = std(0xe9dcc0, 0.8);
+  for (let q = 0; q < 12; q++) { const a0 = q / 12 * 6.283, a1 = (q + 0.5) / 12 * 6.283; const p0 = V3(Math.cos(a0) * (R_ + .03), Math.sin(a0) * (R_ + .03), 0.08), p1 = V3(Math.cos(a1) * (R_ + .03), Math.sin(a1) * (R_ + .03), h - 0.08);
+    const d = p1.clone().sub(p0); const c = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, d.length(), 6), corde); c.position.copy(p0).addScaledVector(d, 0.5); c.quaternion.setFromUnitVectors(V3(0, 1, 0), d.normalize()); g.add(c); }
+  return [sh(g), h];
+}
+function cadeau() {                                     // paquet cadeau avec ruban et noeud
+  const g = new THREE.Group(), papier = std(0x1e6fb8, 0.5), ruban = std(0xf2c230, 0.3, 0.3);
+  g.add(boxM(1.2, 1.2, 0.9, papier, 0, 0, 0.45));
+  g.add(boxM(1.22, 0.16, 0.92, ruban, 0, 0, 0.45)); g.add(boxM(0.16, 1.22, 0.92, ruban, 0, 0, 0.45));
+  for (const s of [-1, 1]) { const b = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.05, 10, 24), ruban); b.position.set(s * 0.17, 0, 0.98); b.rotation.x = Math.PI / 2; b.rotation.y = s * 0.5; g.add(b); }
+  return [sh(g), 0.9];
+}
+function coussin() {                                    // gros coussin moelleux
+  const g = new THREE.Group(); const geo = new THREE.SphereGeometry(1, 48, 24); const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) { let x = p.getX(i), y = p.getY(i), z = p.getZ(i); const k = 1 - 0.18 * Math.abs(x * y); p.setXYZ(i, Math.sign(x) * Math.pow(Math.abs(x), 0.55) * k, Math.sign(y) * Math.pow(Math.abs(y), 0.55) * k, z); }
+  geo.computeVertexNormals();
+  const tissu = canvasTex(256, 256, (c, w, h) => { c.fillStyle = '#c9a8d8'; c.fillRect(0, 0, w, h); for (let x = 0; x < w; x += 16) { c.fillStyle = 'rgba(255,255,255,.18)'; c.fillRect(x, 0, 6, h); } noise(c, w, h, 14, 2); }, 2, 2);
+  const o = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tissu, roughness: 0.95 })); o.scale.set(0.8, 0.8, 0.28); o.position.z = 0.28; g.add(o);
+  return [sh(g), 0.5];
+}
+function tabouret() {                                   // tabouret en bois
+  const g = new THREE.Group(); const bois = canvasTex(256, 256, (c, w, h) => { for (let y = 0; y < h; y++) { const v = 0.5 + 0.5 * Math.sin(y * 0.25 + Math.sin(y * 0.05) * 3); c.fillStyle = `rgb(${150 + 40 * v | 0},${95 + 25 * v | 0},${50 + 15 * v | 0})`; c.fillRect(0, y, w, 1); } noise(c, w, h, 16, 3); }, 1, 1);
+  const m = new THREE.MeshStandardMaterial({ map: bois, roughness: 0.6 });
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.1, 40), m); top.rotation.x = Math.PI / 2; top.position.z = 1.0; g.add(top);
+  for (let q = 0; q < 4; q++) { const a = q * Math.PI / 2 + 0.785; const l = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 1.0, 12), m); l.rotation.x = Math.PI / 2; l.position.set(Math.cos(a) * 0.42, Math.sin(a) * 0.42, 0.5); l.rotation.y = 0; g.add(l); }
+  for (let q = 0; q < 4; q++) { const a = q * Math.PI / 2; const b = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.6, 8), m); b.position.set(Math.cos(a + 0.785) * 0.3 * 0, 0, 0.35); b.rotation.z = a; g.add(b); }
+  return [sh(g), 1.05];
+}
+const OBJ = [['Pile de livres', livres], ['Valise', valise], ['Tambour', tambour], ['Cadeau', cadeau], ['Coussin', coussin], ['Tabouret', tabouret]];
+
+// sol en parquet (au fond du puits) pour situer la scene
+const parquet = canvasTex(512, 512, (c, w, h) => { for (let y = 0; y < h; y += 32) for (let x = -(y / 32 % 2) * 64; x < w; x += 128) { const v = Math.random(); c.fillStyle = `rgb(${120 + 40 * v | 0},${78 + 25 * v | 0},${44 + 12 * v | 0})`; c.fillRect(x + 1, y + 1, 126, 30); } noise(c, w, h, 12, 7); }, 8, 8);
+
+// ---------- deux vues du prototype ----------
+const VIEW = params.get('vue') || 'objets';
+if (VIEW === 'objets') {           // les 6 objets alignes sur une etagere en arc, la bille sur la valise
+  OBJ.forEach(([nom, mk], q) => {
+    const [o, h] = mk(); const a = -0.62 + q * 0.25, rr = 9.0;          // en arc devant le mur
+    o.position.set(rr * Math.cos(a), rr * Math.sin(a), 0); o.rotation.z = a + Math.PI / 2; scene.add(o);
+    if (q === 1) { const ball = new THREE.Mesh(new THREE.SphereGeometry(0.28, 48, 24), new THREE.MeshStandardMaterial({ color: 0x29e6c0, emissive: 0x18c0a0, emissiveIntensity: 1.2, roughness: 0.15 }));
+      ball.position.copy(o.position).add(V3(0, 0, h + 0.28)); ball.castShadow = true; scene.add(ball); }
+  });
+  const fl = new THREE.Mesh(new THREE.CircleGeometry(RW, 96), new THREE.MeshStandardMaterial({ map: parquet, roughness: 0.7 })); fl.position.z = -0.001; fl.receiveShadow = true; scene.add(fl);
+  camera.position.set(-1.5, 0.0, 3.0); camera.lookAt(V3(8.8, 0.0, 0.5));
+} else {                            // vue d'ensemble : spirale d'objets dans le puits
+  const fl = new THREE.Mesh(new THREE.CircleGeometry(RW, 96), new THREE.MeshStandardMaterial({ map: parquet, roughness: 0.7 })); fl.position.z = -22; fl.receiveShadow = true; scene.add(fl);
+  for (let q = 0; q < 28; q++) { const [o] = OBJ[q % 6][1](); const a = -q * 0.42; o.position.set(5 * Math.cos(a), 5 * Math.sin(a), 4 - q * 0.75); o.rotation.z = a; scene.add(o); }
+  camera.position.set(12.5, -3, 7); camera.lookAt(V3(0, 0, -4));
+}
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: 4 }));
+composer.addPass(new RenderPass(scene, camera)); composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.2, 0.4, 0.95)); composer.addPass(new OutputPass());
+window.renderAt = t => { composer.render(); return renderer.domElement.toDataURL('image/jpeg', 0.94); };
+window.END = 1; window.READY = true;
+</script></body></html>
