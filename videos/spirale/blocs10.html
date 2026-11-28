@@ -47,7 +47,10 @@ function fallSeg(T, A, B, v0) {          // chute balistique de A vers B avec vi
 }
 
 // ================= les 10 concepts de blocs =================
-const TYPES = ['ressort', 'slime', 'glace', 'booster', 'bumper', 'verre', 'portail', 'aimant', 'ventilo', 'canon'];
+const TYPES = ['ressort', 'glace', 'booster', 'bumper', 'verre', 'portail', 'aimant', 'ventilo', 'canon'];
+// Les blocs d'un meme pouvoir s'enchainent en serie : le spectateur comprend l'effet en le voyant plusieurs fois.
+// PLAN[section] = [[premiere note, derniere note, type], ...] (numeros de note dans la section)
+const PLAN = { 0: [[1, 6, 'ressort']], 1: [[1, 5, 'booster'], [6, 10, 'portail']], 2: [[1, 6, 'verre'], [7, 12, 'aimant']] };
 const SEGS = [], BLOCKS = [], FUN = [], EVENTS = [];
 let ga = 0, gr = R, gz = 0, nType = 0;   // position courante (les fermetures utilisent des copies locales)
 let i = 0;
@@ -57,7 +60,9 @@ while (i < HITS.length) {
   const kind = i > 0 && HITS[i - 1].sec !== s ? 'sortie' : 'normal';
   const nextIsRim = i < HITS.length - 1 && HITS[i + 1].sec !== s;
   const last = i === HITS.length - 1;
-  const canPair = !nextIsRim && !last && kind === 'normal' && (i - HITS.findIndex(x => x.sec === s)) % 2 === 1;   // bloc special une note sur deux
+  const iSec = i - HITS.findIndex(x => x.sec === s);
+  const planned = (PLAN[s] || []).find(([d, f_]) => iSec >= d && iSec <= f_);
+  const canPair = !nextIsRim && !last && kind === 'normal' && !!planned;
   const A = { a, r, z };
   if (nextIsRim) {                                   // saut dans l'entonnoir
     const tn = TUN[s]; const ac = a - V * T1 / R, zr = z - SLOPE * T1 * 0.6;
@@ -86,7 +91,7 @@ while (i < HITS.length) {
   }
   // ----- bloc special : UNE note (la bille touche toujours le bloc suivant pile sur la note suivante) -----
   const T = T1, TT = T1;
-  const type = TYPES[nType++ % TYPES.length];
+  const type = planned[2]; nType++;
   const K = clamp((T - 0.24) / 0.3, 0, 1);           // notes rapides -> effet plus compact
   const blk = { type, a, r, z, t: t0, sec: s, i, hits: [t0], T1: T, T2: 0 };
   const Bn = { a: a - V * T / R, r: R, z: z - SLOPE * T };
