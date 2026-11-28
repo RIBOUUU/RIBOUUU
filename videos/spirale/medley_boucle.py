@@ -59,16 +59,61 @@ for q, S in enumerate(SONGS):
     g = np.clip(np.arange(len(y)) / (0.6 * len(y)), 0, 1) ** 1.3; fo = int(0.01 * SR); g[-fo:] *= np.linspace(1, 0, fo)
     place(y * g[:, None], tun["rim"])
 loop = out[:n].copy()
-# niveaux : chaque morceau a peu pres au meme volume
-bl = load(BLOP); bl = bl / (np.abs(bl).max() + 1e-9)
-SANS_SON = {"verre"}          # la bille traverse (assiettes qui eclatent) : elle ne rebondit sur rien -> pas de « blop »
+# ---------- chaque objet joue une NOTE de la melodie quand la bille le touche ----------
+import librosa
+def melodie(S):
+    """hauteur de la melodie a chaque croche du drop (pyin sur la partie harmonique, registre C4-C7)"""
+    d = S["n"] * S["B"]; y, sr = librosa.load(S["f"], sr=22050, mono=True, offset=S["D"], duration=d + 0.2)
+    yh = librosa.effects.harmonic(y)
+    f0, vo, _ = librosa.pyin(yh, fmin=260, fmax=2100, sr=sr, frame_length=2048, hop_length=256)
+    tt = librosa.times_like(f0, sr=sr, hop_length=256)
+    C = librosa.feature.chroma_cqt(y=yh, sr=sr, hop_length=256)
+    notes = []
+    for j in range(2 * S["n"]):
+        t0 = j * S["B"] / 2; m = (tt >= t0) & (tt < t0 + S["B"] / 2)
+        fv = f0[m & vo] if np.any(m & vo) else []
+        if len(fv): midi = int(round(np.median(librosa.hz_to_midi(fv))))
+        else: midi = 72 + int(np.argmax(C[:, m].mean(1))) if np.any(m) else 72        # sinon : note dominante (octave 5)
+        while midi > 86: midi -= 12
+        while midi < 64: midi += 12
+        notes.append(midi)
+    return notes
+MEL = [melodie(S) for S in SONGS]
+print("melodies :", [m[:12] for m in MEL])
+sr_ = SR; rng = np.random.default_rng(1)
+def env(n, att, dec): t = np.arange(n) / sr_; return np.minimum(1, t / att) * np.exp(-t / dec)
+def marimba(f, d=1.2):     # bois (etageres)
+    t = np.arange(int(d * sr_)) / sr_
+    return (np.sin(2*np.pi*f*t)*np.exp(-t/0.45) + 0.25*np.sin(2*np.pi*3.93*f*t)*np.exp(-t/0.08) + 0.12*np.sin(2*np.pi*9.9*f*t)*np.exp(-t/0.02)) * np.minimum(1, t/0.002)
+def cloche(f, d=2.0):      # cloche / vibraphone (cerceau, aimant)
+    t = np.arange(int(d * sr_)) / sr_
+    return (np.sin(2*np.pi*f*t)*np.exp(-t/1.0) + 0.4*np.sin(2*np.pi*2.76*f*t)*np.exp(-t/0.35) + 0.2*np.sin(2*np.pi*5.4*f*t)*np.exp(-t/0.12)) * np.minimum(1, t/0.002) * (1 + 0.15*np.sin(2*np.pi*5*t))
+def porcelaine(f, d=1.4):  # « ding » de porcelaine (assiettes) + petit eclat
+    t = np.arange(int(d * sr_)) / sr_
+    return (np.sin(2*np.pi*2*f*t)*np.exp(-t/0.5) + 0.5*np.sin(2*np.pi*2*f*2.71*t)*np.exp(-t/0.2) + 0.3*np.sin(2*np.pi*2*f*5.2*t)*np.exp(-t/0.06)
+            + rng.normal(0, 1, len(t))*np.exp(-t/0.015)*0.25) * np.minimum(1, t/0.001)
+def pluck(f, d=1.0):       # corde pincee (trampoline)
+    t = np.arange(int(d * sr_)) / sr_; s = sum(np.sin(2*np.pi*k*f*t)/k*np.exp(-t*(2.5+2.5*k)) for k in range(1, 10))
+    return s * np.minimum(1, t/0.003) * (1 + 0.04*np.sin(2*np.pi*6*t))
+def tom(f, d=0.9):         # tambour accorde (gant de boxe)
+    t = np.arange(int(d * sr_)) / sr_; ff = f/2*(1 + 0.3*np.exp(-t/0.03))
+    return (np.sin(2*np.pi*np.cumsum(ff)/sr_)*np.exp(-t/0.25) + 0.4*np.sin(2*np.pi*f*t)*np.exp(-t/0.3) + rng.normal(0, 1, len(t))*np.exp(-t/0.01)*0.3)
+def flute(f, d=0.9):       # souffle doux (ventilateur)
+    t = np.arange(int(d * sr_)) / sr_; e = np.minimum(1, t/0.03)*np.exp(-t/0.35)
+    return (np.sin(2*np.pi*f*t) + 0.2*np.sin(4*np.pi*f*t) + rng.normal(0, 1, len(t))*0.05) * e
+INSTR = {"normal": marimba, "ressort": pluck, "vrille": cloche, "verre": porcelaine, "bumper": tom, "aimant": cloche, "ventilo": flute}
 def type_of(h):
-    for d, f_, ty in plan.get(h["sec"], []):
-        if d <= h["i"] <= f_: return ty
+    for d_, f_, ty in plan.get(h["sec"], []):
+        if d_ <= h["i"] <= f_: return ty
     return "normal"
+notes_bus = np.zeros((n, 2))
 for h in hits:
-    if type_of(h) in SANS_SON: continue
-    a = int(round(h["t"] * SR)); m = min(len(bl), n - a); loop[a:a + m] += bl[:m] * 0.3
+    midi = MEL[h["sec"]][h["i"]]; f = 440 * 2 ** ((midi - 69) / 12); ty = type_of(h)
+    x = INSTR[ty](f); x = x / (np.abs(x).max() + 1e-9)
+    a = int(round(h["t"] * SR)); idx = (np.arange(len(x)) + a) % n; pan = 0.5 + 0.3 * np.sin(h["i"] * 1.3)
+    np.add.at(notes_bus[:, 0], idx, x * np.sqrt(1 - pan)); np.add.at(notes_bus[:, 1], idx, x * np.sqrt(pan))
+notes_bus /= np.abs(notes_bus).max() + 1e-9
+loop = 0.42 * loop / (np.abs(loop).max() + 1e-9) + 0.62 * notes_bus        # la musique en dessous, les notes de la bille devant
 loop /= max(1.0, np.abs(loop).max() / 0.98)
 loop = np.roll(loop, -int(round(OFF * SR)), axis=0)
 w = wave.open("audio_medley.wav", "wb"); w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR)
