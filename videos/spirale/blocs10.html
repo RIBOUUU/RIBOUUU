@@ -49,9 +49,10 @@ function fallSeg(T, A, B, v0) {          // chute balistique de A vers B avec vi
 // ================= les 10 concepts de blocs =================
 const TYPES = ['ressort', 'slime', 'glace', 'booster', 'bumper', 'verre', 'portail', 'aimant', 'ventilo', 'tictac'];
 const SEGS = [], BLOCKS = [], FUN = [], EVENTS = [];
-let a = 0, r = R, z = 0, nType = 0;
+let ga = 0, gr = R, gz = 0, nType = 0;   // position courante (les fermetures utilisent des copies locales)
 let i = 0;
 while (i < HITS.length) {
+  const a = ga, r = gr, z = gz;
   const h = HITS[i], t0 = h.t, s = h.sec, T1 = h.dur;
   const kind = i > 0 && HITS[i - 1].sec !== s ? 'sortie' : 'normal';
   const nextIsRim = i < HITS.length - 1 && HITS[i + 1].sec !== s;
@@ -72,7 +73,7 @@ while (i < HITS.length) {
                  A: 2 * (z_hole - z_e - v0 * D) / (D * D), w_end: V * 2.8 / R0, sec: s };
     FUN.push(fn);
     SEGS.push({ t0: tn.rim, t1: tn.exit, f: s_ => ({ p: funnelPos(fn, tn.rim + s_) }) });
-    a = ac; r = R + RF; z = z_e; i += 1; continue;
+    ga = ac; gr = R + RF; gz = z_e; i += 1; continue;
   }
   if (last) {                                         // final : grand saut sur place
     BLOCKS.push({ type: kind, a, r, z, t: t0, sec: s, i, hits: [t0] });
@@ -82,7 +83,7 @@ while (i < HITS.length) {
     const B = { a: a - V * T1 / R, r: R, z: z - SLOPE * T1 };
     BLOCKS.push({ type: kind, a, r, z, t: t0, sec: s, i, hits: [t0] });
     SEGS.push({ t0, t1: t0 + T1, f: hopSeg(t0, T1, A, B, hopNat(T1)) });
-    a = B.a; r = B.r; z = B.z; i += 1; continue;
+    ga = B.a; gr = B.r; gz = B.z; i += 1; continue;
   }
   // ----- bloc special : 2 notes -----
   const T2 = HITS[i + 1].dur, TT = T1 + T2, tm = t0 + T1;
@@ -120,12 +121,10 @@ while (i < HITS.length) {
   } else if (type === 'portail') {                   // aspire dans un portail, ressort par un autre
     B = { a: a - (1.0 + 0.4 * K) * V * TT / R, r: R, z: z - SLOPE * TT };
     const E = { a: B.a, r: R, z: B.z + 1.4 + 1.2 * K };
-    const fl = fallSeg(T2, { a: E.a, r: R, z: E.z - 0.2 }, B, -1.5);
-    const ks = Math.min(0.14, T1 * 0.45);
-    f = s_ => {
-      if (s_ < T1) { const u = clamp(s_ / ks, 0, 1); return { p: P(a, r, z - 0.55 * u), sc: 1 - u }; }
-      const v = s_ - T1; return { ...fl(v), sc: clamp(v / 0.08, 0, 1) };
-    };
+        const tk = Math.min(0.1, T1 * 0.4);              // la bille plonge dans le portail orange puis ressort aussitot du bleu
+    const fl = fallSeg(TT - tk, { a: E.a, r: R, z: E.z - 0.3 }, B, -0.5);
+    f = s_ => s_ < tk ? { p: P(a, r, z - 0.3 * s_ / tk) } : fl(s_ - tk);
+    blk.tk = t0 + tk;
     blk.exit = E;
   } else if (type === 'aimant') {                    // attire vers le haut, colle, puis lache
     const top = z + 1.2 + 0.9 * K;
@@ -154,7 +153,7 @@ while (i < HITS.length) {
   BLOCKS.push(blk);
   EVENTS.push({ type, t: t0, tm, T1, T2 });
   SEGS.push({ t0, t1: t0 + TT, f });
-  a = B.a; r = B.r; z = B.z; i += 2;
+  ga = B.a; gr = B.r; gz = B.z; i += 2;
 }
 
 function funnelState(fn, t) {
@@ -429,7 +428,7 @@ for (const b of BLOCKS) {
     const [g2, rm2, dm2] = mk(0x2a8cff, ex, true);
     anims.push(t => {
       dm1.uniforms.t.value = t; dm2.uniforms.t.value = -t;
-      const k1 = t < b.t ? 0.8 : 0.8 + 3 * Math.exp(-(t - b.t) / 0.3), k2 = t < b.tm ? 0.8 : 0.8 + 3 * Math.exp(-(t - b.tm) / 0.3);
+      const k1 = t < b.t ? 0.8 : 0.8 + 3 * Math.exp(-(t - b.t) / 0.3), k2 = t < b.tk ? 0.8 : 0.8 + 3 * Math.exp(-(t - b.tk) / 0.3);
       dm1.uniforms.k.value = k1; dm2.uniforms.k.value = k2;
       rm1.color.setRGB(1, 0.54, 0).multiplyScalar(1.5 * k1); rm2.color.setRGB(0.16, 0.55, 1).multiplyScalar(1.5 * k2);
       const sp = 1 + 0.08 * Math.sin(t * 7); g1.scale.setScalar(sp); g2.scale.setScalar(sp);
@@ -566,6 +565,11 @@ const ballG = new THREE.Group(); ballG.add(ball); scene.add(ballG);
 const blight = new THREE.PointLight(0xffffff, 6, 7, 1.6); ballG.add(blight);
 const halo = new THREE.Mesh(new THREE.SphereGeometry(BR * 1.9, 32, 16), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
 ballG.add(halo);
+const dotTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 128; const cx = cv.getContext('2d');
+  const g = cx.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.18, 'rgba(255,255,255,1)');
+  g.addColorStop(0.3, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)'); cx.fillStyle = g; cx.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(cv); })();
+const marker = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex, depthTest: false, depthWrite: false, transparent: true, blending: THREE.AdditiveBlending, toneMapped: false }));
+marker.renderOrder = 999; marker.scale.setScalar(BR * 4.2); ballG.add(marker);
 function ballCol(t) {
   let c = BALLC[0].slice();
   FUN.forEach((fn, q) => { const u = sstep(fn.drop, fn.exit, t); c = c.map((v, j) => v * (1 - u) + BALLC[q + 1][j] * u); });
@@ -590,7 +594,7 @@ function rig(t) {
   }
   const tf = HITS[HITS.length - 1].t, wz = sstep(tf - 0.1, tf + 1.3, t);
   if (wz > 0) { const bp = ballPos(t), ab = Math.atan2(bp.y, bp.x) + 0.95;
-    pos.lerp(V3(19 * Math.cos(ab), 19 * Math.sin(ab), bp.z + 8.5), wz); tg.lerp(V3(bp.x * 0.3, bp.y * 0.3, bp.z - 5.0), wz); }
+    pos.lerp(V3(13 * Math.cos(ab), 13 * Math.sin(ab), bp.z + 4.5), wz); tg.lerp(V3(bp.x * 0.7, bp.y * 0.7, bp.z - 1.5), wz); }
   for (const tb of BOOMS) { const s = t - tb; if (s > 0 && s < 0.8) { const k = 0.22 * Math.exp(-6 * s); pos.add(V3(Math.sin(53 * s), Math.cos(47 * s), Math.sin(61 * s)).multiplyScalar(k)); } }
   return [pos, tg];
 }
@@ -611,7 +615,7 @@ function renderAt(t) {
   ball.rotation.set(t * 2.1, -t * 3.3, 0);
   const c = ballCol(t); ballM.color.setRGB(...c); ballM.emissive.setRGB(...c); blight.color.setRGB(...c);
   const boost = FUN.reduce((acc, fn) => acc + sstep(fn.rim, fn.drop, t) * (1 - sstep(fn.exit, fn.exit + 0.6, t)), 0);
-  blight.intensity = 6 + 8 * boost; halo.material.color.setRGB(...c);
+  blight.intensity = 6 + 8 * boost; halo.material.color.setRGB(...c); marker.material.color.setRGB(0.55 + 0.45 * c[0], 0.55 + 0.45 * c[1], 0.55 + 0.45 * c[2]);
   let ps = V3(0, 0, 0), ts = V3(0, 0, 0);
   for (let q = 0; q < 5; q++) { const [p_, t_] = rig(t + (q / 4 - 0.5) * 0.08); ps.add(p_); ts.add(t_); }
   camera.position.copy(ps.divideScalar(5)); camera.lookAt(ts.divideScalar(5));
@@ -620,6 +624,7 @@ function renderAt(t) {
   composer.render();
 }
 window.renderAt = t => { renderAt(t); return renderer.domElement.toDataURL('image/jpeg', 0.93); };
+window.ballNDC = t => { renderAt(t); const bp = ballPos(t); window.__dbg = [bp.toArray().map(x=>+x.toFixed(2)), camera.position.toArray().map(x=>+x.toFixed(2))]; const v = bp.clone().project(camera); return [v.x, v.y, v.z]; };
 window.END = END; window.EVENTS = EVENTS; window.READY = true;
 if (!params.has('capture')) { const st = performance.now(); (function loop(){ renderAt(((performance.now()-st)/1000) % END); requestAnimationFrame(loop); })(); }
 </script></body></html>
