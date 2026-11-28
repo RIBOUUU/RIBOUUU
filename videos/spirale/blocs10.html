@@ -194,7 +194,9 @@ const SUN_DIR = V3(Math.cos(0.61) * Math.sin(0.96), Math.sin(0.61) * Math.sin(0.
 const std = (c, ro = 0.4, me = 0, extra = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: ro, metalness: me, ...extra });
 const M_BODY = std(0x0c0c0e, 0.28, 0.2), M_STEEL = std(0xd0d0d8, 0.25, 1), M_DARK = std(0x1a1a20, 0.5, 0.3);
 const box = (w, d, h, m) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, d, h), m); o.castShadow = o.receiveShadow = true; return o; };
-const glowMat = c => new THREE.MeshBasicMaterial({ color: new THREE.Color(c), toneMapped: false });
+const MAT = params.has('mat');          // version « rien ne brille » : pas de halo, pas de neons, pas de bloom
+const GLOWS = [];
+const glowMat = c => { const m = new THREE.MeshBasicMaterial({ color: new THREE.Color(c), toneMapped: false }); GLOWS.push(m); return m; };
 
 // chiffres lumineux (7 segments) sur la face exterieure des blocs
 const SEG7 = { 0: 'abcdef', 1: 'bc', 2: 'abged', 3: 'abgcd', 4: 'fgbc', 5: 'afgcd', 6: 'afgedc', 7: 'abc', 8: 'abcdefg', 9: 'abcfgd' };
@@ -477,7 +479,7 @@ for (const fn of FUN) {
   for (let q = 0; q < nr; q++) for (let j = 0; j < na; j++) { const a0 = q * na + j, a1 = q * na + (j + 1) % na; idx.push(a0, a1, a1 + na, a0, a1 + na, a0 + na); }
   const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setIndex(idx); geo.computeVertexNormals();
   const mat = new THREE.ShaderMaterial({ side: THREE.DoubleSide, toneMapped: false,
-    uniforms: { phase: { value: 0 }, glow: { value: 1 }, col: { value: col }, ldir: { value: SUN_DIR } },
+    uniforms: { phase: { value: 0 }, glow: { value: 1 }, col: { value: col }, ldir: { value: SUN_DIR } }, defines: { MAXG: MAT ? '0.6' : '100.0' },
     vertexShader: `varying vec3 vp; varying vec3 vn; varying vec3 vw; void main(){ vp = position; vn = normalize(mat3(modelMatrix)*normal);
       vec4 w = modelMatrix*vec4(position,1.); vw = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
     fragmentShader: `uniform float phase, glow; uniform vec3 col, ldir; varying vec3 vp; varying vec3 vn; varying vec3 vw;
@@ -485,7 +487,7 @@ for (const fn of FUN) {
         float s = sin(log(max(r,.05))*7. + a*4. + phase); float e = clamp((s-.55)/.45, 0., 1.);
         vec3 V = normalize(cameraPosition - vw); vec3 N = normalize(vn); if(dot(N,V)<0.) N=-N;
         float dif = max(dot(N, ldir), 0.)*.35 + .08; float fr = pow(1.-max(dot(N,V),0.), 3.);
-        vec3 c = vec3(.015,.015,.02)*dif*10. + vec3(.5,.45,.6)*fr*.35 + col*e*glow*.55;
+        vec3 c = vec3(.015,.015,.02)*dif*10. + vec3(.5,.45,.6)*fr*.35 + col*e*min(glow*.55, MAXG);
         gl_FragColor = vec4(c, 1.); }` });
   const fo = new THREE.Mesh(geo, mat); fo.position.set(fn.C.x, fn.C.y, fn.top); scene.add(fo);
   const ringM = glowMat(col); const ring = new THREE.Mesh(new THREE.TorusGeometry(RF + 0.35, 0.05, 12, 128), ringM); ring.position.copy(fo.position); scene.add(ring);
@@ -527,7 +529,7 @@ for (const b of BLOCKS) if ((b.type === 'normal') && b.i % 3 === 0) {
   const cv = document.createElement('canvas'); cv.width = cv.height = 64; const cx = cv.getContext('2d');
   const gr = cx.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.35, 'rgba(255,255,255,.6)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
   cx.fillStyle = gr; cx.fillRect(0, 0, 64, 64);
-  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ size: 0.22, map: new THREE.CanvasTexture(cv), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false })));
+  if (!MAT) scene.add(new THREE.Points(g, new THREE.PointsMaterial({ size: 0.22, map: new THREE.CanvasTexture(cv), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false })));
 }
 
 // ---------- bille ----------
@@ -541,7 +543,7 @@ const dotTex = (() => { const cv = document.createElement('canvas'); cv.width = 
   const g = cx.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.18, 'rgba(255,255,255,1)');
   g.addColorStop(0.3, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)'); cx.fillStyle = g; cx.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(cv); })();
 const marker = new THREE.Sprite(new THREE.SpriteMaterial({ map: dotTex, depthTest: false, depthWrite: false, transparent: true, blending: THREE.AdditiveBlending, toneMapped: false }));
-marker.renderOrder = 999; marker.scale.setScalar(BR * 4.2); ballG.add(marker);
+marker.visible = !MAT; halo.visible = !MAT; marker.renderOrder = 999; marker.scale.setScalar(BR * 4.2); ballG.add(marker);
 function ballCol(t) {
   let c = BALLC[0].slice();
   FUN.forEach((fn, q) => { const u = sstep(fn.drop, fn.exit, t); c = c.map((v, j) => v * (1 - u) + BALLC[q + 1][j] * u); });
@@ -573,11 +575,12 @@ function rig(t) {
 
 const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: 4 }));
 composer.addPass(new RenderPass(scene, camera));
-composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.85, 0.5, 0.8));
+if (!MAT) composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.85, 0.5, 0.8));
 composer.addPass(new OutputPass());
 
 function renderAt(t) {
   for (const f of anims) f(t);
+  if (MAT) for (const m of GLOWS) { const c = m.color, k = Math.max(c.r, c.g, c.b, 1e-4); c.multiplyScalar(0.75 / k); }
   const st = ballState(t);
   ballG.position.copy(st.p);
   const sc = st.sc != null ? st.sc : 1, sq = st.sq || 0;
@@ -586,8 +589,9 @@ function renderAt(t) {
   ballG.visible = sc > 0.01;
   ball.rotation.set(t * 2.1, -t * 3.3, 0);
   const c = ballCol(t); ballM.color.setRGB(...c); ballM.emissive.setRGB(...c); blight.color.setRGB(...c);
+  if (MAT) { ballM.emissiveIntensity = 0.25; blight.intensity = 0; }
   const boost = FUN.reduce((acc, fn) => acc + sstep(fn.rim, fn.drop, t) * (1 - sstep(fn.exit, fn.exit + 0.6, t)), 0);
-  blight.intensity = 6 + 8 * boost; halo.material.color.setRGB(...c); marker.material.color.setRGB(0.55 + 0.45 * c[0], 0.55 + 0.45 * c[1], 0.55 + 0.45 * c[2]);
+  if (!MAT) blight.intensity = 6 + 8 * boost; halo.material.color.setRGB(...c); marker.material.color.setRGB(0.55 + 0.45 * c[0], 0.55 + 0.45 * c[1], 0.55 + 0.45 * c[2]);
   let ps = V3(0, 0, 0), ts = V3(0, 0, 0);
   for (let q = 0; q < 5; q++) { const [p_, t_] = rig(t + (q / 4 - 0.5) * 0.08); ps.add(p_); ts.add(t_); }
   camera.position.copy(ps.divideScalar(5)); camera.lookAt(ts.divideScalar(5));
